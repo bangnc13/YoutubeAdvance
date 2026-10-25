@@ -1230,7 +1230,12 @@ jobs:
                           var ok = false
                           while (!ok && System.currentTimeMillis() < deadline) {
                               delay(code.interval * 1000L)
-                              ok = withContext(Dispatchers.IO) { googleAuth.pollToken(code) }
+                              // Mất mạng tạm thời (ví dụ app đang ở nền) thì cứ thử lại, không hủy đăng nhập
+                              ok = try {
+                                  withContext(Dispatchers.IO) { googleAuth.pollToken(code) }
+                              } catch (e: java.io.IOException) {
+                                  false
+                              }
                           }
                           if (ok) {
                               googleSignedIn = true
@@ -1340,18 +1345,21 @@ jobs:
                               channels = withContext(Dispatchers.IO) { api.subscriptions() }
                               subscriptions = channels
                           }
-                          val feeds = coroutineScope {
+                          val results = coroutineScope {
                               channels.take(60).map { ch ->
                                   async(Dispatchers.IO) {
                                       try {
-                                          api.channelFeed(ch.id)
+                                          api.channelVideos(ch.id) to null
                                       } catch (e: Exception) {
-                                          emptyList<FeedVideo>()
+                                          emptyList<FeedVideo>() to (e.message ?: "Lỗi không xác định")
                                       }
                                   }
                               }.awaitAll()
                           }
-                          subsFeed = feeds.flatten().sortedByDescending { it.published }.take(150)
+                          subsFeed = results.flatMap { it.first }.sortedByDescending { it.published }.take(150)
+                          if (subsFeed.isEmpty()) {
+                              subsError = results.firstNotNullOfOrNull { it.second }
+                          }
                       } catch (e: CancellationException) {
                           throw e
                       } catch (e: Exception) {
@@ -2752,6 +2760,53 @@ jobs:
 
               fun unsubscribe(subscriptionId: String) {
                   call("DELETE", "$base/subscriptions?id=$subscriptionId")
+              }
+
+              /**
+               * Video mới của một kênh: ưu tiên API chính thức (danh sách video tải lên của kênh),
+               * nếu lỗi thì thử RSS công khai. Cả hai cùng lỗi thì báo lỗi của API.
+               */
+              fun channelVideos(channelId: String): List<FeedVideo> {
+                  var apiError: String? = null
+                  try {
+                      val v = playlistVideos(channelId)
+                      if (v.isNotEmpty()) return v
+                  } catch (e: Exception) {
+                      apiError = e.message
+                  }
+                  val rss = try {
+                      channelFeed(channelId)
+                  } catch (e: Exception) {
+                      emptyList()
+                  }
+                  if (rss.isEmpty() && apiError != null) throw IllegalStateException(apiError)
+                  return rss
+              }
+
+              private fun playlistVideos(channelId: String): List<FeedVideo> {
+                  // Danh sách "video đã tải lên" của kênh có id giống id kênh, chỉ đổi UC -> UU
+                  val uploads = "UU" + channelId.removePrefix("UC")
+                  val j = call("GET", "$base/playlistItems?part=snippet&maxResults=10&playlistId=$uploads")
+                  val items = j.optJSONArray("items") ?: return emptyList()
+                  val out = ArrayList<FeedVideo>()
+                  for (i in 0 until items.length()) {
+                      val sn = items.getJSONObject(i).optJSONObject("snippet") ?: continue
+                      val id = sn.optJSONObject("resourceId")?.optString("videoId").orEmpty()
+                      if (id.isEmpty()) continue
+                      val title = sn.optString("title")
+                      if (title == "Private video" || title == "Deleted video") continue
+                      val author = sn.optString("videoOwnerChannelTitle").ifEmpty { sn.optString("channelTitle") }
+                      out.add(
+                          FeedVideo(
+                              "https://www.youtube.com/watch?v=$id",
+                              title,
+                              author,
+                              "https://i.ytimg.com/vi/$id/hqdefault.jpg",
+                              parseDate(sn.optString("publishedAt"))
+                          )
+                      )
+                  }
+                  return out
               }
 
               /** Video mới của một kênh qua RSS công khai (không tốn hạn mức API). */
