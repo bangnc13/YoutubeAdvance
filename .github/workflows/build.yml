@@ -18,2955 +18,592 @@ jobs:
           gradle-version: '8.9'
       - name: Tao ma nguon
         run: |
-          mkdir -p app
-          cat > app/build.gradle.kts <<'EOF'
-          plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-          }
-
-          android {
-              namespace = "com.example.adfreetube"
-              compileSdk = 34
-
-              defaultConfig {
-                  applicationId = "com.example.adfreetube"
-                  minSdk = 24
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
-              }
-
-              buildFeatures { compose = true }
-              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-                  isCoreLibraryDesugaringEnabled = true // NewPipeExtractor cần
-              }
-              kotlinOptions { jvmTarget = "17" }
-          }
-
-          dependencies {
-              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
-
-              // Lấy dữ liệu YouTube không quảng cáo. Bản v0.25.1 trở lên đã sửa lỗi
-              // "The page needs to be reloaded". Kiểm tra bản mới nhất tại
-              // https://github.com/TeamNewPipe/NewPipeExtractor/releases
-              implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
-              implementation("com.squareup.okhttp3:okhttp:4.12.0")
-
-              val media3 = "1.3.1"
-              implementation("androidx.media3:media3-exoplayer:$media3")
-              implementation("androidx.media3:media3-exoplayer-hls:$media3")
-              implementation("androidx.media3:media3-ui:$media3")
-              implementation("androidx.media3:media3-session:$media3")
-              implementation("com.google.guava:guava:33.2.1-android")
-
-              implementation(platform("androidx.compose:compose-bom:2024.06.00"))
-              implementation("androidx.compose.material3:material3")
-              implementation("androidx.compose.ui:ui")
-              implementation("androidx.compose.material:material-icons-core")
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("androidx.activity:activity-compose:1.9.0")
-              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
-              implementation("io.coil-kt:coil-compose:2.6.0")
-          }
-          EOF
-          mkdir -p app/src/main
-          cat > app/src/main/AndroidManifest.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.WAKE_LOCK" />
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-              <application
-                  android:allowBackup="true"
-                  android:icon="@mipmap/ic_launcher"
-                  android:label="@string/app_name"
-                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:supportsPictureInPicture="true"
-                      android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-
-                  <service
-                      android:name=".PlaybackService"
-                      android:exported="true"
-                      android:foregroundServiceType="mediaPlayback">
-                      <intent-filter>
-                          <action android:name="androidx.media3.session.MediaSessionService" />
-                      </intent-filter>
-                  </service>
-              </application>
-          </manifest>
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/Components.kt <<'EOF'
-          package com.example.adfreetube
-
-          import androidx.compose.foundation.background
-          import androidx.compose.foundation.clickable
-          import androidx.compose.foundation.layout.Arrangement
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.Column
-          import androidx.compose.foundation.layout.Row
-          import androidx.compose.foundation.layout.Spacer
-          import androidx.compose.foundation.layout.aspectRatio
-          import androidx.compose.foundation.layout.fillMaxWidth
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.size
-          import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.shape.CircleShape
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.filled.PlayArrow
-          import androidx.compose.material3.Icon
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.Text
-          import androidx.compose.material3.TextButton
-          import androidx.compose.runtime.Composable
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.graphics.vector.ImageVector
-          import androidx.compose.ui.layout.ContentScale
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.style.TextAlign
-          import androidx.compose.ui.text.style.TextOverflow
-          import androidx.compose.ui.unit.Dp
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import coil.compose.AsyncImage
-          import org.schabi.newpipe.extractor.stream.StreamInfoItem
-          import org.schabi.newpipe.extractor.stream.StreamType
-
-          @Composable
-          fun YouTubeLogo() {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                  Box(
-                      Modifier
-                          .size(width = 30.dp, height = 21.dp)
-                          .clip(RoundedCornerShape(6.dp))
-                          .background(Color(0xFFFF0000)),
-                      contentAlignment = Alignment.Center
-                  ) {
-                      Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                  }
-                  Spacer(Modifier.width(6.dp))
-                  Text("BangNC _ Tube", fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
-              }
-          }
-
-          @Composable
-          fun InitialBadge(name: String, size: Dp) {
-              Box(
-                  Modifier
-                      .size(size)
-                      .clip(CircleShape)
-                      .background(Color(0xFFCC0000)),
-                  contentAlignment = Alignment.Center
-              ) {
-                  Text(
-                      name.take(1).uppercase(),
-                      color = Color.White,
-                      fontWeight = FontWeight.Bold,
-                      fontSize = (size.value * 0.5f).sp
-                  )
-              }
-          }
-
-          @Composable
-          fun Avatar(url: String?, size: Dp = 36.dp) {
-              AsyncImage(
-                  model = url,
-                  contentDescription = null,
-                  contentScale = ContentScale.Crop,
-                  modifier = Modifier
-                      .size(size)
-                      .clip(CircleShape)
-                      .background(MaterialTheme.colorScheme.surfaceVariant)
-              )
-          }
-
-          @Composable
-          fun Pill(text: String, icon: ImageVector? = null, onClick: (() -> Unit)? = null) {
-              val base = Modifier
-                  .clip(RoundedCornerShape(20.dp))
-                  .background(MaterialTheme.colorScheme.surfaceVariant)
-              Row(
-                  (if (onClick != null) base.clickable(onClick = onClick) else base)
-                      .padding(horizontal = 14.dp, vertical = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  if (icon != null) {
-                      Icon(icon, null, Modifier.size(18.dp))
-                      Spacer(Modifier.width(6.dp))
-                  }
-                  Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-              }
-          }
-
-          @Composable
-          fun ErrorBox(message: String, onRetry: () -> Unit) {
-              Column(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(24.dp),
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  verticalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                  Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                  TextButton(onClick = onRetry) { Text("Thử lại") }
-              }
-          }
-
-          /** Thẻ video kiểu YouTube: thumbnail 16:9 full-width, avatar kênh + tiêu đề + thông tin. */
-          @Composable
-          fun VideoCard(item: StreamInfoItem, onClick: () -> Unit) {
-              val live = item.streamType == StreamType.LIVE_STREAM
-              val badge = when {
-                  live -> "TRỰC TIẾP"
-                  item.duration > 0 -> formatDuration(item.duration)
-                  else -> null
-              }
-              val views = item.viewCount.takeIf { it >= 0 }
-                  ?.let { formatCount(it) + if (live) " đang xem" else " lượt xem" }
-              val meta = listOfNotNull(
-                  item.uploaderName?.takeIf { it.isNotBlank() },
-                  views,
-                  item.textualUploadDate?.takeIf { it.isNotBlank() }
-              ).joinToString(" • ")
-
-              Column(
-                  Modifier
-                      .fillMaxWidth()
-                      .clickable(onClick = onClick)
-                      .padding(bottom = 8.dp)
-              ) {
-                  Box {
-                      AsyncImage(
-                          model = item.thumbnails.lastOrNull()?.url,
-                          contentDescription = null,
-                          contentScale = ContentScale.Crop,
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .aspectRatio(16 / 9f)
-                              .background(MaterialTheme.colorScheme.surfaceVariant)
-                      )
-                      if (badge != null) {
-                          Text(
-                              badge,
-                              color = Color.White,
-                              fontSize = 12.sp,
-                              fontWeight = FontWeight.SemiBold,
-                              modifier = Modifier
-                                  .align(Alignment.BottomEnd)
-                                  .padding(8.dp)
-                                  .clip(RoundedCornerShape(4.dp))
-                                  .background(if (live) Color(0xFFCC0000) else Color(0xCC000000))
-                                  .padding(horizontal = 5.dp, vertical = 1.dp)
-                          )
-                      }
-                  }
-                  Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
-                      Avatar(item.uploaderAvatars.lastOrNull()?.url)
-                      Spacer(Modifier.width(12.dp))
-                      Column {
-                          Text(
-                              item.name,
-                              maxLines = 2,
-                              overflow = TextOverflow.Ellipsis,
-                              fontSize = 15.sp,
-                              lineHeight = 20.sp,
-                              fontWeight = FontWeight.Medium
-                          )
-                          Spacer(Modifier.height(2.dp))
-                          Text(
-                              meta,
-                              maxLines = 2,
-                              overflow = TextOverflow.Ellipsis,
-                              fontSize = 12.sp,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                      }
-                  }
-              }
-          }
-
-          /** Thẻ video cho mục "Đăng ký" (dữ liệu từ RSS của kênh). */
-          @Composable
-          fun FeedCard(v: FeedVideo, onClick: () -> Unit) {
-              Column(
-                  Modifier
-                      .fillMaxWidth()
-                      .clickable(onClick = onClick)
-                      .padding(bottom = 16.dp)
-              ) {
-                  AsyncImage(
-                      model = v.thumb,
-                      contentDescription = null,
-                      contentScale = ContentScale.Crop,
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .aspectRatio(16 / 9f)
-                          .background(MaterialTheme.colorScheme.surfaceVariant)
-                  )
-                  Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                      Text(
-                          v.title,
-                          maxLines = 2,
-                          overflow = TextOverflow.Ellipsis,
-                          fontSize = 15.sp,
-                          lineHeight = 20.sp,
-                          fontWeight = FontWeight.Medium
-                      )
-                      Spacer(Modifier.height(2.dp))
-                      Text(
-                          listOf(v.author, timeAgo(v.published)).filter { it.isNotBlank() }.joinToString(" • "),
-                          fontSize = 12.sp,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/DownloaderImpl.kt <<'EOF'
-          package com.example.adfreetube
-
-          import okhttp3.OkHttpClient
-          import okhttp3.RequestBody.Companion.toRequestBody
-          import org.schabi.newpipe.extractor.downloader.Downloader
-          import org.schabi.newpipe.extractor.downloader.Request
-          import org.schabi.newpipe.extractor.downloader.Response
-          import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
-          import java.util.concurrent.TimeUnit
-
-          /** NewPipeExtractor cần một Downloader để gửi HTTP request. */
-          object DownloaderImpl : Downloader() {
-              const val USER_AGENT =
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-
-              private val client = OkHttpClient.Builder()
-                  .readTimeout(30, TimeUnit.SECONDS)
-                  .build()
-
-              override fun execute(request: Request): Response {
-                  val body = request.dataToSend()?.toRequestBody()
-                  val builder = okhttp3.Request.Builder()
-                      .method(request.httpMethod(), body)
-                      .url(request.url())
-                      .header("User-Agent", USER_AGENT)
-
-                  request.headers().forEach { (name, values) ->
-                      builder.removeHeader(name)
-                      values.forEach { builder.addHeader(name, it) }
-                  }
-
-                  client.newCall(builder.build()).execute().use { resp ->
-                      if (resp.code == 429) {
-                          throw ReCaptchaException("reCaptcha Challenge requested", request.url())
-                      }
-                      return Response(
-                          resp.code,
-                          resp.message,
-                          resp.headers.toMultimap(),
-                          resp.body?.string(),
-                          resp.request.url.toString()
-                      )
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/Format.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.app.Activity
-          import android.content.Context
-          import android.content.ContextWrapper
-          import java.util.Locale
-
-          /** 1234567 -> "1,2 Tr" (kiểu YouTube tiếng Việt: N = nghìn, Tr = triệu, Tỷ = tỷ). */
-          fun formatCount(n: Long): String {
-              if (n < 0) return ""
-              fun f(v: Double, unit: String): String {
-                  val s = if (v >= 100 || v == Math.floor(v)) String.format(Locale.US, "%.0f", v)
-                  else String.format(Locale.US, "%.1f", v)
-                  return s.replace('.', ',') + " " + unit
-              }
-              return when {
-                  n >= 1_000_000_000L -> f(n / 1e9, "Tỷ")
-                  n >= 1_000_000L -> f(n / 1e6, "Tr")
-                  n >= 1_000L -> f(n / 1e3, "N")
-                  else -> n.toString()
-              }
-          }
-
-          fun formatDuration(sec: Long): String {
-              if (sec < 0) return ""
-              val h = sec / 3600
-              val m = (sec % 3600) / 60
-              val s = sec % 60
-              return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s)
-              else String.format(Locale.US, "%d:%02d", m, s)
-          }
-
-          tailrec fun Context.findActivity(): Activity? = when (this) {
-              is Activity -> this
-              is ContextWrapper -> baseContext.findActivity()
-              else -> null
-          }
-
-          private const val ANDROID_UA =
-              "com.google.android.youtube/19.28.35 (Linux; U; Android 15; GB) gzip"
-          private const val IOS_UA =
-              "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)"
-
-          /** Link stream của từng "client" YouTube cần đúng User-Agent, nếu không dễ bị lỗi 403. */
-          fun userAgentFor(url: String): String = when {
-              "c=IOS" in url -> IOS_UA
-              "c=ANDROID" in url -> ANDROID_UA
-              else -> DownloaderImpl.USER_AGENT
-          }
-
-          fun timeAgo(ms: Long): String {
-              if (ms <= 0) return ""
-              val diff = (System.currentTimeMillis() - ms) / 1000
-              return when {
-                  diff < 60 -> "Vừa xong"
-                  diff < 3600 -> "${diff / 60} phút trước"
-                  diff < 86400 -> "${diff / 3600} giờ trước"
-                  diff < 86400L * 30 -> "${diff / 86400} ngày trước"
-                  diff < 86400L * 365 -> "${diff / (86400L * 30)} tháng trước"
-                  else -> "${diff / (86400L * 365)} năm trước"
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/GoogleAuth.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.content.Context
-          import okhttp3.FormBody
-          import okhttp3.OkHttpClient
-          import okhttp3.Request
-          import org.json.JSONObject
-
-          /**
-           * Đăng nhập Google bằng "device flow" chính thức của Google (nhập mã tại google.com/device).
-           * Người dùng tự tạo Client ID / Client secret trong Google Cloud Console và dán vào app.
-           */
-          class GoogleAuth(context: Context) {
-              private val prefs = context.getSharedPreferences("bangnc_google", Context.MODE_PRIVATE)
-              private val http = OkHttpClient()
-
-              class DeviceCode(
-                  val deviceCode: String,
-                  val userCode: String,
-                  val url: String,
-                  val interval: Int,
-                  val expiresIn: Int
-              )
-
-              var clientId: String
-                  get() = prefs.getString("client_id", "") ?: ""
-                  set(v) {
-                      prefs.edit().putString("client_id", v.trim()).apply()
-                  }
-
-              var clientSecret: String
-                  get() = prefs.getString("client_secret", "") ?: ""
-                  set(v) {
-                      prefs.edit().putString("client_secret", v.trim()).apply()
-                  }
-
-              val isConfigured: Boolean get() = clientId.isNotBlank() && clientSecret.isNotBlank()
-              val isSignedIn: Boolean get() = !prefs.getString("refresh_token", null).isNullOrEmpty()
-
-              fun requestDeviceCode(): DeviceCode {
-                  val json = post(
-                      "https://oauth2.googleapis.com/device/code",
-                      mapOf("client_id" to clientId, "scope" to "https://www.googleapis.com/auth/youtube")
-                  )
-                  if (json.has("error")) {
-                      throw IllegalStateException(json.optString("error_description", json.optString("error")))
-                  }
-                  return DeviceCode(
-                      json.getString("device_code"),
-                      json.getString("user_code"),
-                      json.optString("verification_url", "https://www.google.com/device"),
-                      json.optInt("interval", 5),
-                      json.optInt("expires_in", 1800)
-                  )
-              }
-
-              /** true = đã được duyệt và lưu token; false = người dùng chưa xác nhận, cứ chờ tiếp. */
-              fun pollToken(code: DeviceCode): Boolean {
-                  val json = post(
-                      TOKEN_URL,
-                      mapOf(
-                          "client_id" to clientId,
-                          "client_secret" to clientSecret,
-                          "device_code" to code.deviceCode,
-                          "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"
-                      )
-                  )
-                  val err = json.optString("error")
-                  if (err == "authorization_pending" || err == "slow_down") return false
-                  if (err.isNotEmpty()) {
-                      throw IllegalStateException(json.optString("error_description", err))
-                  }
-                  saveTokens(json)
-                  return true
-              }
-
-              fun accessToken(): String {
-                  val token = prefs.getString("access_token", null)
-                  if (token != null && System.currentTimeMillis() < prefs.getLong("expires_at", 0L)) return token
-
-                  val refresh = prefs.getString("refresh_token", null)
-                      ?: throw IllegalStateException("Chưa đăng nhập Google")
-                  val json = post(
-                      TOKEN_URL,
-                      mapOf(
-                          "client_id" to clientId,
-                          "client_secret" to clientSecret,
-                          "refresh_token" to refresh,
-                          "grant_type" to "refresh_token"
-                      )
-                  )
-                  if (json.has("error")) {
-                      if (json.optString("error") == "invalid_grant") signOut()
-                      throw IllegalStateException("Phiên đăng nhập Google đã hết hạn, hãy đăng nhập lại")
-                  }
-                  saveTokens(json)
-                  return json.getString("access_token")
-              }
-
-              fun signOut() {
-                  prefs.edit()
-                      .remove("access_token")
-                      .remove("refresh_token")
-                      .remove("expires_at")
-                      .apply()
-              }
-
-              private fun saveTokens(json: JSONObject) {
-                  val e = prefs.edit()
-                  e.putString("access_token", json.getString("access_token"))
-                  e.putLong("expires_at", System.currentTimeMillis() + (json.optLong("expires_in", 3600) - 60) * 1000)
-                  val rt = json.optString("refresh_token")
-                  if (rt.isNotEmpty()) e.putString("refresh_token", rt)
-                  e.apply()
-              }
-
-              private fun post(url: String, params: Map<String, String>): JSONObject {
-                  val body = FormBody.Builder().apply {
-                      params.forEach { (k, v) -> add(k, v) }
-                  }.build()
-                  http.newCall(Request.Builder().url(url).post(body).build()).execute().use { r ->
-                      return JSONObject(r.body?.string() ?: "{}")
-                  }
-              }
-
-              private companion object {
-                  const val TOKEN_URL = "https://oauth2.googleapis.com/token"
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/HomeScreen.kt <<'EOF'
-          package com.example.adfreetube
-
-          import androidx.compose.foundation.background
-          import androidx.compose.foundation.clickable
-          import androidx.compose.foundation.layout.Arrangement
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.Column
-          import androidx.compose.foundation.layout.PaddingValues
-          import androidx.compose.foundation.layout.Row
-          import androidx.compose.foundation.layout.Spacer
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.foundation.layout.fillMaxWidth
-          import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.size
-          import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.LazyRow
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.foundation.lazy.itemsIndexed
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.foundation.text.KeyboardActions
-          import androidx.compose.foundation.text.KeyboardOptions
-          import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.automirrored.filled.ArrowBack
-          import androidx.compose.material.icons.filled.AccountCircle
-          import androidx.compose.material.icons.filled.Close
-          import androidx.compose.material.icons.filled.Search
-          import androidx.compose.material3.CircularProgressIndicator
-          import androidx.compose.material3.Icon
-          import androidx.compose.material3.IconButton
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.Text
-          import androidx.compose.material3.TextField
-          import androidx.compose.material3.TextFieldDefaults
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.LaunchedEffect
-          import androidx.compose.runtime.derivedStateOf
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.remember
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.focus.FocusRequester
-          import androidx.compose.ui.focus.focusRequester
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.platform.LocalFocusManager
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.input.ImeAction
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-
-          @Composable
-          fun HomeScreen(vm: MainViewModel) {
-              Column(Modifier.fillMaxSize()) {
-                  if (vm.searching) {
-                      SearchTopBar(vm)
-                      SuggestionList(vm)
-                  } else {
-                      HomeTopBar(vm)
-                      Chips(vm)
-                      if (vm.subsMode) SubsFeed(vm) else Feed(vm)
-                  }
-              }
-          }
-
-          @Composable
-          private fun HomeTopBar(vm: MainViewModel) {
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .height(56.dp)
-                      .padding(horizontal = 12.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  YouTubeLogo()
-                  Spacer(Modifier.weight(1f))
-                  IconButton(onClick = { vm.openSearch() }) {
-                      Icon(Icons.Filled.Search, contentDescription = "Tìm kiếm")
-                  }
-                  IconButton(onClick = { vm.showProfile = true }) {
-                      if (vm.userKey != null) {
-                          InitialBadge(vm.userName, 28.dp)
-                      } else {
-                          Icon(Icons.Filled.AccountCircle, contentDescription = "Tài khoản")
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          private fun SearchTopBar(vm: MainViewModel) {
-              val focus = remember { FocusRequester() }
-              val focusManager = LocalFocusManager.current
-              LaunchedEffect(Unit) { focus.requestFocus() }
-
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(horizontal = 4.dp, vertical = 4.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  IconButton(onClick = { vm.searching = false }) {
-                      Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại")
-                  }
-                  TextField(
-                      value = vm.searchText,
-                      onValueChange = { vm.onSearchTextChange(it) },
-                      placeholder = { Text("Tìm kiếm") },
-                      singleLine = true,
-                      shape = RoundedCornerShape(24.dp),
-                      colors = TextFieldDefaults.colors(
-                          focusedIndicatorColor = Color.Transparent,
-                          unfocusedIndicatorColor = Color.Transparent,
-                          disabledIndicatorColor = Color.Transparent,
-                          focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                          unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                      ),
-                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                      keyboardActions = KeyboardActions(onSearch = {
-                          focusManager.clearFocus()
-                          vm.submitSearch(vm.searchText)
-                      }),
-                      trailingIcon = {
-                          if (vm.searchText.isNotEmpty()) {
-                              IconButton(onClick = { vm.onSearchTextChange("") }) {
-                                  Icon(Icons.Filled.Close, contentDescription = "Xóa")
-                              }
-                          }
-                      },
-                      modifier = Modifier
-                          .weight(1f)
-                          .focusRequester(focus)
-                  )
-                  Spacer(Modifier.width(8.dp))
-              }
-          }
-
-          @Composable
-          private fun SuggestionList(vm: MainViewModel) {
-              LazyColumn(Modifier.fillMaxSize()) {
-                  items(if (vm.searchText.isBlank()) vm.searchHistory else vm.suggestions) { s ->
-                      Row(
-                          Modifier
-                              .fillMaxWidth()
-                              .clickable { vm.submitSearch(s) }
-                              .padding(horizontal = 16.dp, vertical = 14.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Icon(
-                              Icons.Filled.Search, null,
-                              Modifier.size(20.dp),
-                              tint = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                          Spacer(Modifier.width(16.dp))
-                          Text(s, fontSize = 16.sp)
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          private fun Chips(vm: MainViewModel) {
-              LazyRow(
-                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                  horizontalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                  if (vm.googleSignedIn) {
-                      item { ChipItem("Đăng ký", vm.subsMode) { vm.openSubscriptions() } }
-                  }
-                  itemsIndexed(vm.chips) { i, chip ->
-                      ChipItem(chip.first, !vm.subsMode && vm.selectedChip == i) { vm.selectChip(i) }
-                  }
-              }
-          }
-
-          @Composable
-          private fun ChipItem(label: String, selected: Boolean, onClick: () -> Unit) {
-              val colors = MaterialTheme.colorScheme
-              Text(
-                  label,
-                  color = if (selected) colors.background else colors.onBackground,
-                  fontSize = 14.sp,
-                  fontWeight = FontWeight.Medium,
-                  modifier = Modifier
-                      .clip(RoundedCornerShape(8.dp))
-                      .background(if (selected) colors.onBackground else colors.surfaceVariant)
-                      .clickable(onClick = onClick)
-                      .padding(horizontal = 12.dp, vertical = 7.dp)
-              )
-          }
-
-          @Composable
-          private fun SubsFeed(vm: MainViewModel) {
-              Box(Modifier.fillMaxSize()) {
-                  LazyColumn(modifier = Modifier.fillMaxSize()) {
-                      items(vm.subsFeed) { v ->
-                          FeedCard(v) { vm.play(v.url, v.title) }
-                      }
-                  }
-                  if (vm.subsLoading) {
-                      CircularProgressIndicator(Modifier.align(Alignment.Center))
-                  }
-                  vm.subsError?.let { msg ->
-                      ErrorBox(msg) { vm.openSubscriptions() }
-                  }
-                  if (!vm.subsLoading && vm.subsError == null && vm.subsFeed.isEmpty()) {
-                      Text(
-                          "Chưa có video mới từ các kênh bạn đã đăng ký",
-                          color = MaterialTheme.colorScheme.onSurfaceVariant,
-                          modifier = Modifier
-                              .align(Alignment.Center)
-                              .padding(24.dp)
-                      )
-                  }
-              }
-          }
-
-          @Composable
-          private fun Feed(vm: MainViewModel) {
-              val listState = vm.feedListState
-              val nearEnd by remember {
-                  derivedStateOf {
-                      val info = listState.layoutInfo
-                      val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                      info.totalItemsCount > 0 && last >= info.totalItemsCount - 3
-                  }
-              }
-              LaunchedEffect(nearEnd, vm.feed.size) {
-                  if (nearEnd) vm.loadMore()
-              }
-
-              Box(Modifier.fillMaxSize()) {
-                  LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
-                      items(vm.feed) { item ->
-                          VideoCard(item) { vm.play(item.url, item.name) }
-                      }
-                      if (vm.moreLoading) {
-                          item {
-                              Box(
-                                  Modifier
-                                      .fillMaxWidth()
-                                      .padding(16.dp),
-                                  contentAlignment = Alignment.Center
-                              ) { CircularProgressIndicator(Modifier.size(24.dp)) }
-                          }
-                      }
-                  }
-                  if (vm.feedLoading) {
-                      CircularProgressIndicator(Modifier.align(Alignment.Center))
-                  }
-                  vm.feedError?.let { msg ->
-                      ErrorBox(msg) { vm.loadFeed(vm.currentQuery) }
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/MainActivity.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.Manifest
-          import android.app.PictureInPictureParams
-          import android.content.Context
-          import android.content.pm.ActivityInfo
-          import android.content.pm.PackageManager
-          import android.content.res.Configuration
-          import android.os.Build
-          import android.os.Bundle
-          import android.os.PowerManager
-          import android.util.Rational
-          import androidx.activity.ComponentActivity
-          import androidx.activity.compose.BackHandler
-          import androidx.activity.compose.setContent
-          import androidx.activity.result.contract.ActivityResultContracts
-          import androidx.activity.viewModels
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.Surface
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.LaunchedEffect
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.core.content.ContextCompat
-          import androidx.core.view.WindowCompat
-          import androidx.core.view.WindowInsetsCompat
-          import androidx.core.view.WindowInsetsControllerCompat
-
-          class MainActivity : ComponentActivity() {
-              private val vm: MainViewModel by viewModels()
-
-              private val notificationPermission =
-                  registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  WindowCompat.setDecorFitsSystemWindows(window, true)
-
-                  // Android 13+: cần quyền thông báo để hiện nút điều khiển khi phát nền
-                  if (Build.VERSION.SDK_INT >= 33 &&
-                      ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                      != PackageManager.PERMISSION_GRANTED
-                  ) {
-                      notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                  }
-
-                  setContent {
-                      AdFreeTheme { App(vm) }
-                  }
-              }
-
-              /** Bấm Home / chuyển app khi đang phát -> thu nhỏ thành cửa sổ nổi (Picture-in-Picture). */
-              override fun onUserLeaveHint() {
-                  super.onUserLeaveHint()
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                      vm.watching && vm.player?.isPlaying == true
-                  ) {
-                      val params = PictureInPictureParams.Builder()
-                          .setAspectRatio(Rational(16, 9))
-                          .build()
-                      enterPictureInPictureMode(params)
-                  }
-              }
-
-              override fun onPictureInPictureModeChanged(
-                  isInPictureInPictureMode: Boolean,
-                  newConfig: Configuration
-              ) {
-                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-                  vm.inPip = isInPictureInPictureMode
-              }
-
-              /** Đóng cửa sổ nổi (bấm X) -> dừng phát. Tắt màn hình thì vẫn phát tiếp. */
-              override fun onStop() {
-                  super.onStop()
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
-                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-                      if (pm.isInteractive) vm.stopPlayback()
-                  }
-              }
-          }
-
-          @Composable
-          fun App(vm: MainViewModel) {
-              BackHandler(enabled = vm.fullscreen || vm.watching || vm.showProfile || vm.searching) {
-                  when {
-                      vm.fullscreen -> vm.fullscreen = false
-                      vm.watching -> vm.closeWatch()
-                      vm.showProfile -> vm.showProfile = false
-                      else -> vm.searching = false
-                  }
-              }
-              FullscreenEffect(vm)
-
-              Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                  when {
-                      vm.watching -> WatchScreen(vm)
-                      vm.showProfile -> ProfileScreen(vm)
-                      else -> HomeScreen(vm)
-                  }
-              }
-          }
-
-          /** Bật/tắt chế độ toàn màn hình: xoay ngang và ẩn thanh hệ thống. */
-          @Composable
-          private fun FullscreenEffect(vm: MainViewModel) {
-              val ctx = LocalContext.current
-              LaunchedEffect(vm.fullscreen) {
-                  val act = ctx.findActivity() ?: return@LaunchedEffect
-                  val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
-                  if (vm.fullscreen) {
-                      act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                      controller.systemBarsBehavior =
-                          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                      controller.hide(WindowInsetsCompat.Type.systemBars())
-                  } else {
-                      act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                      controller.show(WindowInsetsCompat.Type.systemBars())
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/MainViewModel.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.app.Application
-          import android.content.ComponentName
-          import androidx.compose.foundation.lazy.LazyListState
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableIntStateOf
-          import androidx.compose.runtime.mutableStateOf
-          import androidx.compose.runtime.setValue
-          import androidx.core.content.ContextCompat
-          import androidx.core.text.HtmlCompat
-          import androidx.lifecycle.AndroidViewModel
-          import androidx.lifecycle.viewModelScope
-          import androidx.media3.common.PlaybackException
-          import androidx.media3.common.Player
-          import androidx.media3.session.MediaController
-          import androidx.media3.session.SessionToken
-          import kotlinx.coroutines.CancellationException
-          import kotlinx.coroutines.Dispatchers
-          import kotlinx.coroutines.Job
-          import kotlinx.coroutines.async
-          import kotlinx.coroutines.awaitAll
-          import kotlinx.coroutines.coroutineScope
-          import kotlinx.coroutines.delay
-          import kotlinx.coroutines.launch
-          import kotlinx.coroutines.withContext
-          import org.schabi.newpipe.extractor.NewPipe
-          import org.schabi.newpipe.extractor.Page
-          import org.schabi.newpipe.extractor.ServiceList
-          import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
-          import org.schabi.newpipe.extractor.localization.ContentCountry
-          import org.schabi.newpipe.extractor.localization.Localization
-          import org.schabi.newpipe.extractor.search.SearchInfo
-          import org.schabi.newpipe.extractor.stream.AudioStream
-          import org.schabi.newpipe.extractor.stream.Description
-          import org.schabi.newpipe.extractor.stream.StreamInfo
-          import org.schabi.newpipe.extractor.stream.StreamInfoItem
-          import org.schabi.newpipe.extractor.stream.VideoStream
-
-          /** audioUrl != null nghĩa là luồng hình và tiếng tách riêng (1080p trở lên), cần ghép khi phát. */
-          data class Quality(
-              val label: String,
-              val url: String,
-              val audioUrl: String? = null,
-              val height: Int = 0
-          )
-
-          data class WatchState(
-              val pageUrl: String,
-              val title: String,
-              val uploader: String,
-              val channelId: String?,
-              val avatar: String?,
-              val subscribers: Long,
-              val views: Long,
-              val likes: Long,
-              val date: String,
-              val description: String,
-              val thumb: String?,
-              val duration: Long,
-              val qualities: List<Quality>,
-              val related: List<StreamInfoItem>
-          )
-
-          class MainViewModel(app: Application) : AndroidViewModel(app) {
-              private val youtube = ServiceList.YouTube
-              private val store = UserStore(app)
-              private val googleAuth = GoogleAuth(app)
-              private val api = YouTubeApi(googleAuth)
-
-              // ---- Tài khoản cục bộ (lịch sử trên máy) ----
-              var showProfile by mutableStateOf(false)
-              var userKey by mutableStateOf<String?>(store.currentUser())
-              var userName by mutableStateOf(store.currentUser()?.let { store.displayName(it) } ?: "")
-              var loginError by mutableStateOf<String?>(null)
-              var history by mutableStateOf<List<HistoryEntry>>(emptyList())
-              var searchHistory by mutableStateOf<List<String>>(emptyList())
-
-              // ---- Kết nối YouTube (đăng ký kênh) ----
-              var googleConfigured by mutableStateOf(googleAuth.isConfigured)
-              var googleSignedIn by mutableStateOf(googleAuth.isSignedIn)
-              var googleChannelName by mutableStateOf("")
-              var googleBusy by mutableStateOf(false)
-              var googleError by mutableStateOf<String?>(null)
-              var deviceCode by mutableStateOf<GoogleAuth.DeviceCode?>(null)
-              var subscriptions by mutableStateOf<List<Channel>>(emptyList())
-              var subBusy by mutableStateOf(false)
-              var subMessage by mutableStateOf<String?>(null)
-              var subsMode by mutableStateOf(false)
-              var subsFeed by mutableStateOf<List<FeedVideo>>(emptyList())
-              var subsLoading by mutableStateOf(false)
-              var subsError by mutableStateOf<String?>(null)
-              private var loginJob: Job? = null
-
-              // ---- Trang chủ / tìm kiếm ----
-              val chips = listOf(
-                  "Tất cả" to "xu hướng",
-                  "Trò chơi" to "trò chơi",
-                  "Âm nhạc" to "nhạc việt",
-                  "Trực tiếp" to "trực tiếp",
-                  "Tin tức" to "tin tức hôm nay",
-                  "Thể thao" to "thể thao",
-                  "Nấu ăn" to "nấu ăn",
-                  "Hoạt hình" to "hoạt hình",
-                  "Công nghệ" to "công nghệ"
-              )
-              val feedListState = LazyListState()
-
-              var searching by mutableStateOf(false)
-              var searchText by mutableStateOf("")
-              var suggestions by mutableStateOf<List<String>>(emptyList())
-              var selectedChip by mutableIntStateOf(0)
-              var currentQuery by mutableStateOf(chips[0].second)
-
-              var feed by mutableStateOf<List<StreamInfoItem>>(emptyList())
-              var feedLoading by mutableStateOf(false)
-              var moreLoading by mutableStateOf(false)
-              var feedError by mutableStateOf<String?>(null)
-
-              private var handler: SearchQueryHandler? = null
-              private var nextPage: Page? = null
-              private var feedJob: Job? = null
-              private var suggestJob: Job? = null
-
-              // ---- Màn hình xem video ----
-              var watching by mutableStateOf(false)
-              var watch by mutableStateOf<WatchState?>(null)
-              var watchLoading by mutableStateOf(false)
-              var watchError by mutableStateOf<String?>(null)
-              var watchTitleHint by mutableStateOf("")
-              var selectedQuality by mutableIntStateOf(0)
-              var playerError by mutableStateOf<String?>(null)
-              var fullscreen by mutableStateOf(false)
-              private var watchJob: Job? = null
-
-              // ---- Trình phát (nằm trong PlaybackService) ----
-              var controller by mutableStateOf<MediaController?>(null)
-              var player by mutableStateOf<Player?>(null)
-              var inPip by mutableStateOf(false)
-              private var releaseController: (() -> Unit)? = null
-
-              init {
-                  NewPipe.init(DownloaderImpl, Localization("vi", "VN"), ContentCountry("VN"))
-                  loadFeed(currentQuery)
-                  connectPlayer()
-                  reloadUserData()
-                  if (googleSignedIn) refreshSubscriptions()
-              }
-
-              private fun connectPlayer() {
-                  val ctx = getApplication<Application>()
-                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-                  val future = MediaController.Builder(ctx, token).buildAsync()
-                  future.addListener({
-                      try {
-                          val c = future.get()
-                          c.addListener(object : Player.Listener {
-                              override fun onPlayerError(error: PlaybackException) {
-                                  playerError =
-                                      "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
-                              }
-
-                              override fun onPlaybackStateChanged(playbackState: Int) {
-                                  if (playbackState == Player.STATE_READY) playerError = null
-                              }
-                          })
-                          controller = c
-                          player = c
-                      } catch (e: Exception) {
-                          playerError = "Không kết nối được trình phát nền"
-                      }
-                  }, ContextCompat.getMainExecutor(ctx))
-                  releaseController = { MediaController.releaseFuture(future) }
-              }
-
-              fun stopPlayback() {
-                  player?.run {
-                      stop()
-                      clearMediaItems()
-                  }
-                  closeWatch()
-              }
-
-              override fun onCleared() {
-                  releaseController?.invoke()
-                  super.onCleared()
-              }
-
-              // ================= Tài khoản cục bộ =================
-              private fun reloadUserData() {
-                  val u = userKey
-                  history = if (u == null) emptyList() else store.history(u)
-                  searchHistory = if (u == null) emptyList() else store.searches(u)
-              }
-
-              fun login(name: String, password: String) {
-                  val err = store.loginOrRegister(name, password)
-                  loginError = err
-                  if (err == null) {
-                      userKey = store.currentUser()
-                      userName = userKey?.let { store.displayName(it) } ?: ""
-                      reloadUserData()
-                  }
-              }
-
-              fun logout() {
-                  store.logout()
-                  userKey = null
-                  userName = ""
-                  loginError = null
-                  reloadUserData()
-              }
-
-              fun clearHistory() {
-                  userKey?.let { store.clearHistory(it) }
-                  reloadUserData()
-              }
-
-              fun clearSearchHistory() {
-                  userKey?.let { store.clearSearches(it) }
-                  reloadUserData()
-              }
-
-              private fun recordHistory(w: WatchState) {
-                  val u = userKey ?: return
-                  store.addHistory(
-                      u,
-                      HistoryEntry(w.pageUrl, w.title, w.uploader, w.thumb, w.duration, System.currentTimeMillis())
-                  )
-                  history = store.history(u)
-              }
-
-              // ================= Kết nối YouTube =================
-              fun googleClientId(): String = googleAuth.clientId
-              fun googleClientSecret(): String = googleAuth.clientSecret
-
-              fun saveGoogleConfig(clientId: String, secret: String) {
-                  googleAuth.clientId = clientId
-                  googleAuth.clientSecret = secret
-                  googleConfigured = googleAuth.isConfigured
-                  googleError = null
-              }
-
-              fun startGoogleLogin() {
-                  loginJob?.cancel()
-                  loginJob = viewModelScope.launch {
-                      googleError = null
-                      googleBusy = true
-                      try {
-                          val code = withContext(Dispatchers.IO) { googleAuth.requestDeviceCode() }
-                          deviceCode = code
-                          val deadline = System.currentTimeMillis() + code.expiresIn * 1000L
-                          var ok = false
-                          while (!ok && System.currentTimeMillis() < deadline) {
-                              delay(code.interval * 1000L)
-                              // Mất mạng tạm thời (ví dụ app đang ở nền) thì cứ thử lại, không hủy đăng nhập
-                              ok = try {
-                                  withContext(Dispatchers.IO) { googleAuth.pollToken(code) }
-                              } catch (e: java.io.IOException) {
-                                  false
-                              }
-                          }
-                          if (ok) {
-                              googleSignedIn = true
-                              refreshSubscriptions()
-                          } else {
-                              googleError = "Mã đã hết hạn, hãy thử lại"
-                          }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          googleError = e.message ?: "Lỗi đăng nhập Google"
-                      }
-                      deviceCode = null
-                      googleBusy = false
-                  }
-              }
-
-              fun cancelGoogleLogin() {
-                  loginJob?.cancel()
-                  deviceCode = null
-                  googleBusy = false
-              }
-
-              fun signOutGoogle() {
-                  googleAuth.signOut()
-                  googleSignedIn = false
-                  googleChannelName = ""
-                  subscriptions = emptyList()
-                  subsFeed = emptyList()
-                  subsMode = false
-              }
-
-              fun refreshSubscriptions() {
-                  if (!googleSignedIn) return
-                  viewModelScope.launch {
-                      googleBusy = true
-                      googleError = null
-                      try {
-                          subscriptions = withContext(Dispatchers.IO) { api.subscriptions() }
-                          googleChannelName = withContext(Dispatchers.IO) {
-                              try {
-                                  api.myChannelName()
-                              } catch (e: Exception) {
-                                  ""
-                              }
-                          }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          googleError = e.message
-                          googleSignedIn = googleAuth.isSignedIn
-                      }
-                      googleBusy = false
-                  }
-              }
-
-              fun isSubscribed(channelId: String): Boolean = subscriptions.any { it.id == channelId }
-
-              fun toggleSubscribe(channelId: String) {
-                  if (!googleSignedIn) {
-                      subMessage = "Hãy kết nối tài khoản YouTube trong mục Tài khoản để đăng ký kênh"
-                      return
-                  }
-                  viewModelScope.launch {
-                      subBusy = true
-                      subMessage = null
-                      try {
-                          val existing = subscriptions.firstOrNull { it.id == channelId }
-                          if (existing != null) {
-                              withContext(Dispatchers.IO) { api.unsubscribe(existing.subId) }
-                              subscriptions = subscriptions.filter { it.id != channelId }
-                          } else {
-                              val c = withContext(Dispatchers.IO) { api.subscribe(channelId) }
-                              subscriptions = subscriptions + c
-                          }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          subMessage = e.message ?: "Không thực hiện được"
-                      }
-                      subBusy = false
-                  }
-              }
-
-              fun unsubscribe(channel: Channel) {
-                  viewModelScope.launch {
-                      try {
-                          withContext(Dispatchers.IO) { api.unsubscribe(channel.subId) }
-                          subscriptions = subscriptions.filter { it.id != channel.id }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          googleError = e.message
-                      }
-                  }
-              }
-
-              fun openSubscriptions() {
-                  subsMode = true
-                  selectedChip = -1
-                  viewModelScope.launch {
-                      subsLoading = true
-                      subsError = null
-                      try {
-                          var channels = subscriptions
-                          if (channels.isEmpty()) {
-                              channels = withContext(Dispatchers.IO) { api.subscriptions() }
-                              subscriptions = channels
-                          }
-                          val results = coroutineScope {
-                              channels.take(60).map { ch ->
-                                  async(Dispatchers.IO) {
-                                      try {
-                                          api.channelVideos(ch.id) to null
-                                      } catch (e: Exception) {
-                                          emptyList<FeedVideo>() to (e.message ?: "Lỗi không xác định")
-                                      }
-                                  }
-                              }.awaitAll()
-                          }
-                          subsFeed = results.flatMap { it.first }.sortedByDescending { it.published }.take(150)
-                          if (subsFeed.isEmpty()) {
-                              subsError = results.firstNotNullOfOrNull { it.second }
-                          }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          subsError = e.message ?: "Không tải được video từ kênh đã đăng ký"
-                      }
-                      subsLoading = false
-                  }
-              }
-
-              // ================= Feed =================
-              fun loadFeed(q: String) {
-                  feedJob?.cancel()
-                  feedJob = viewModelScope.launch {
-                      feedLoading = true
-                      moreLoading = false
-                      feedError = null
-                      feed = emptyList()
-                      nextPage = null
-                      try {
-                          val h = youtube.searchQHFactory.fromQuery(q, listOf("videos"), "")
-                          val info = withContext(Dispatchers.IO) { SearchInfo.getInfo(youtube, h) }
-                          handler = h
-                          nextPage = info.nextPage
-                          feed = info.relatedItems.filterIsInstance<StreamInfoItem>()
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          feedError = e.message ?: "Không tải được danh sách video"
-                      }
-                      feedLoading = false
-                  }
-              }
-
-              fun loadMore() {
-                  val page = nextPage ?: return
-                  val h = handler ?: return
-                  if (moreLoading || feedLoading) return
-                  viewModelScope.launch {
-                      moreLoading = true
-                      try {
-                          val res = withContext(Dispatchers.IO) { SearchInfo.getMoreItems(youtube, h, page) }
-                          feed = feed + res.items.filterIsInstance<StreamInfoItem>()
-                          nextPage = res.nextPage
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          nextPage = null
-                      }
-                      moreLoading = false
-                  }
-              }
-
-              fun selectChip(i: Int) {
-                  subsMode = false
-                  selectedChip = i
-                  currentQuery = chips[i].second
-                  loadFeed(currentQuery)
-              }
-
-              fun openSearch() {
-                  searching = true
-              }
-
-              fun onSearchTextChange(t: String) {
-                  searchText = t
-                  suggestJob?.cancel()
-                  if (t.isBlank()) {
-                      suggestions = emptyList()
-                      return
-                  }
-                  suggestJob = viewModelScope.launch {
-                      delay(250)
-                      try {
-                          suggestions = withContext(Dispatchers.IO) { youtube.suggestionExtractor.suggestionList(t) }
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          // gợi ý lỗi thì bỏ qua
-                      }
-                  }
-              }
-
-              fun submitSearch(q: String) {
-                  if (q.isBlank()) return
-                  searchText = q
-                  searching = false
-                  subsMode = false
-                  suggestions = emptyList()
-                  selectedChip = -1
-                  currentQuery = q
-                  userKey?.let {
-                      store.addSearch(it, q.trim())
-                      searchHistory = store.searches(it)
-                  }
-                  loadFeed(q)
-              }
-
-              // ================= Xem video =================
-              fun play(url: String, titleHint: String = "") {
-                  watchJob?.cancel()
-                  watching = true
-                  watchLoading = true
-                  watchError = null
-                  playerError = null
-                  subMessage = null
-                  watchTitleHint = titleHint
-                  watch = null
-                  selectedQuality = 0
-                  watchJob = viewModelScope.launch {
-                      try {
-                          val loaded = withContext(Dispatchers.IO) { loadWatch(url) }
-                          watch = loaded
-                          // Mặc định chọn chất lượng cao nhất không vượt quá 1080p
-                          selectedQuality = loaded.qualities.indexOfFirst { it.height in 1..1080 }.coerceAtLeast(0)
-                          recordHistory(loaded)
-                      } catch (e: CancellationException) {
-                          throw e
-                      } catch (e: Exception) {
-                          watchError = e.message ?: "Không tải được video"
-                      }
-                      watchLoading = false
-                  }
-              }
-
-              fun closeWatch() {
-                  player?.run {
-                      stop()
-                      clearMediaItems()
-                  }
-                  watchJob?.cancel()
-                  watching = false
-                  fullscreen = false
-                  watch = null
-                  watchError = null
-                  playerError = null
-              }
-
-              /** Hình tách riêng (tới 4K) + tiếng tốt nhất, thêm các luồng gộp sẵn nếu chưa có độ phân giải đó. */
-              private fun buildQualities(info: StreamInfo): List<Quality> {
-                  val audios = info.audioStreams
-
-                  fun pickAudio(preferM4a: Boolean): AudioStream? {
-                      val pool = audios.filter { (it.format?.suffix == "m4a") == preferM4a }.ifEmpty { audios }
-                      return pool.maxByOrNull { it.averageBitrate }
-                  }
-
-                  // Số nhỏ = ưu tiên hơn. Từ 1080p trở xuống ưu tiên H.264, trên 1080p ưu tiên VP9.
-                  fun rank(v: VideoStream): Int {
-                      val c = v.codec ?: ""
-                      val high = v.height > 1080
-                      return when {
-                          c.startsWith("avc1") -> if (high) 2 else 0
-                          c.startsWith("vp09") || c.startsWith("vp9") -> if (high) 0 else 1
-                          c.startsWith("av01") -> if (high) 1 else 2
-                          else -> 3
-                      }
-                  }
-
-                  val out = ArrayList<Quality>()
-                  val groups = info.videoOnlyStreams.groupBy { it.height to it.fps }
-                  val keys = groups.keys.sortedWith(
-                      compareByDescending<Pair<Int, Int>> { it.first }.thenByDescending { it.second }
-                  )
-                  for (key in keys) {
-                      val h = key.first
-                      val fps = key.second
-                      val best = groups.getValue(key)
-                          .sortedWith(compareBy<VideoStream>({ rank(it) }, { -it.bitrate }))
-                          .first()
-                      val audio = pickAudio(best.format?.suffix == "mp4") ?: continue
-                      val tag = when {
-                          h >= 2160 -> " (4K)"
-                          h >= 1440 -> " (2K)"
-                          h >= 1080 -> " (Full HD)"
-                          h >= 720 -> " (HD)"
-                          else -> ""
-                      }
-                      val label = "${h}p" + (if (fps > 30) "$fps" else "") + tag
-                      out.add(Quality(label, best.content, audio.content, h))
-                  }
-
-                  val adaptiveHeights = out.map { it.height }.toSet()
-                  info.videoStreams
-                      .sortedByDescending { it.height }
-                      .distinctBy { it.height }
-                      .forEach { v ->
-                          if (v.height !in adaptiveHeights) {
-                              out.add(Quality("${v.height}p", v.content, null, v.height))
-                          }
-                      }
-                  return out.sortedByDescending { it.height }
-              }
-
-              private fun loadWatch(url: String): WatchState {
-                  val info = StreamInfo.getInfo(youtube, url)
-
-                  var qualities = buildQualities(info)
-                  if (qualities.isEmpty() && !info.hlsUrl.isNullOrBlank()) {
-                      qualities = listOf(Quality("Tự động", info.hlsUrl, null, 0))
-                  }
-                  if (qualities.isEmpty()) {
-                      throw IllegalStateException("Không tìm thấy luồng phát cho video này")
-                  }
-
-                  val d = info.description
-                  val desc = when {
-                      d == null -> ""
-                      d.type == Description.HTML ->
-                          HtmlCompat.fromHtml(d.content, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().trim()
-                      else -> d.content.trim()
-                  }
-
-                  return WatchState(
-                      pageUrl = url,
-                      title = info.name,
-                      uploader = info.uploaderName ?: "",
-                      channelId = info.uploaderUrl?.substringAfterLast('/')?.takeIf { it.startsWith("UC") },
-                      avatar = info.uploaderAvatars.lastOrNull()?.url,
-                      subscribers = info.uploaderSubscriberCount,
-                      views = info.viewCount,
-                      likes = info.likeCount,
-                      date = info.textualUploadDate ?: "",
-                      description = desc,
-                      thumb = info.thumbnails.lastOrNull()?.url,
-                      duration = info.duration,
-                      qualities = qualities,
-                      related = info.relatedItems.filterIsInstance<StreamInfoItem>()
-                  )
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/PlaybackService.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.content.Intent
-          import android.os.Bundle
-          import androidx.media3.common.AudioAttributes
-          import androidx.media3.common.C
-          import androidx.media3.common.MediaItem
-          import androidx.media3.common.MediaMetadata
-          import androidx.media3.datasource.DataSource
-          import androidx.media3.datasource.DefaultHttpDataSource
-          import androidx.media3.datasource.ResolvingDataSource
-          import androidx.media3.exoplayer.ExoPlayer
-          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-          import androidx.media3.exoplayer.source.MergingMediaSource
-          import androidx.media3.exoplayer.source.ProgressiveMediaSource
-          import androidx.media3.session.MediaSession
-          import androidx.media3.session.MediaSessionService
-          import androidx.media3.session.SessionCommand
-          import androidx.media3.session.SessionResult
-          import com.google.common.util.concurrent.Futures
-          import com.google.common.util.concurrent.ListenableFuture
-
-          /**
-           * Trình phát chạy trong một dịch vụ nền (foreground service) nên tắt màn hình
-           * hoặc thoát app vẫn tiếp tục phát, có thông báo điều khiển trên màn hình khóa.
-           */
-          class PlaybackService : MediaSessionService() {
-              private var session: MediaSession? = null
-              private var exo: ExoPlayer? = null
-              private var dataSource: DataSource.Factory? = null
-
-              override fun onCreate() {
-                  super.onCreate()
-
-                  // Mỗi link stream cần đúng User-Agent của "client" YouTube tạo ra nó
-                  val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
-                  val ds = ResolvingDataSource.Factory(http) { spec ->
-                      spec.withAdditionalHeaders(mapOf("User-Agent" to userAgentFor(spec.uri.toString())))
-                  }
-                  dataSource = ds
-
-                  val player = ExoPlayer.Builder(this)
-                      .setMediaSourceFactory(DefaultMediaSourceFactory(ds))
-                      .setAudioAttributes(AudioAttributes.DEFAULT, true)
-                      .setHandleAudioBecomingNoisy(true)
-                      .setWakeMode(C.WAKE_MODE_NETWORK)
-                      .build()
-                  exo = player
-
-                  session = MediaSession.Builder(this, player)
-                      .setCallback(object : MediaSession.Callback {
-                          override fun onConnect(
-                              session: MediaSession,
-                              controller: MediaSession.ControllerInfo
-                          ): MediaSession.ConnectionResult {
-                              val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-                                  .buildUpon()
-                                  .add(SessionCommand(CMD_PLAY_MERGED, Bundle.EMPTY))
-                                  .build()
-                              return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                                  .setAvailableSessionCommands(commands)
-                                  .build()
-                          }
-
-                          override fun onCustomCommand(
-                              session: MediaSession,
-                              controller: MediaSession.ControllerInfo,
-                              customCommand: SessionCommand,
-                              args: Bundle
-                          ): ListenableFuture<SessionResult> {
-                              if (customCommand.customAction == CMD_PLAY_MERGED) {
-                                  playMerged(args)
-                                  return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
-                              }
-                              return super.onCustomCommand(session, controller, customCommand, args)
-                          }
-                      })
-                      .build()
-              }
-
-              /** Ghép luồng hình (không tiếng) và luồng tiếng riêng để phát được 1080p / 1440p / 4K. */
-              private fun playMerged(args: Bundle) {
-                  val player = exo ?: return
-                  val ds = dataSource ?: return
-                  val video = args.getString("video") ?: return
-                  val audio = args.getString("audio") ?: return
-                  val pos = args.getLong("pos", 0L)
-
-                  val videoItem = MediaItem.Builder()
-                      .setUri(video)
-                      .setMediaMetadata(
-                          MediaMetadata.Builder()
-                              .setTitle(args.getString("title"))
-                              .setArtist(args.getString("artist"))
-                              .build()
-                      )
-                      .build()
-                  val factory = ProgressiveMediaSource.Factory(ds)
-                  val merged = MergingMediaSource(
-                      factory.createMediaSource(videoItem),
-                      factory.createMediaSource(MediaItem.fromUri(audio))
-                  )
-                  player.setMediaSource(merged, pos)
-                  player.prepare()
-                  player.play()
-              }
-
-              override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
-
-              // Vuốt app khỏi danh sách gần đây thì dừng hẳn
-              override fun onTaskRemoved(rootIntent: Intent?) {
-                  session?.player?.pause()
-                  stopSelf()
-              }
-
-              override fun onDestroy() {
-                  session?.run {
-                      player.release()
-                      release()
-                  }
-                  session = null
-                  exo = null
-                  super.onDestroy()
-              }
-
-              companion object {
-                  const val CMD_PLAY_MERGED = "com.example.adfreetube.PLAY_MERGED"
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/Profile.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.content.Intent
-          import android.net.Uri
-          import androidx.compose.foundation.background
-          import androidx.compose.foundation.clickable
-          import androidx.compose.foundation.layout.Arrangement
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.Column
-          import androidx.compose.foundation.layout.Row
-          import androidx.compose.foundation.layout.Spacer
-          import androidx.compose.foundation.layout.aspectRatio
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.foundation.layout.fillMaxWidth
-          import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.size
-          import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.foundation.text.KeyboardActions
-          import androidx.compose.foundation.text.KeyboardOptions
-          import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.automirrored.filled.ArrowBack
-          import androidx.compose.material.icons.filled.Search
-          import androidx.compose.material3.Button
-          import androidx.compose.material3.CircularProgressIndicator
-          import androidx.compose.material3.Icon
-          import androidx.compose.material3.IconButton
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.OutlinedButton
-          import androidx.compose.material3.OutlinedTextField
-          import androidx.compose.material3.Text
-          import androidx.compose.material3.TextButton
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableStateOf
-          import androidx.compose.runtime.remember
-          import androidx.compose.runtime.setValue
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.layout.ContentScale
-          import androidx.compose.ui.platform.LocalClipboardManager
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.text.AnnotatedString
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.input.ImeAction
-          import androidx.compose.ui.text.input.KeyboardType
-          import androidx.compose.ui.text.input.PasswordVisualTransformation
-          import androidx.compose.ui.text.style.TextOverflow
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import coil.compose.AsyncImage
-
-          @Composable
-          fun ProfileScreen(vm: MainViewModel) {
-              val sortedSubs = remember(vm.subscriptions) {
-                  vm.subscriptions.sortedBy { it.title.lowercase() }
-              }
-
-              Column(Modifier.fillMaxSize()) {
-                  Row(
-                      Modifier
-                          .fillMaxWidth()
-                          .height(56.dp)
-                          .padding(horizontal = 4.dp),
-                      verticalAlignment = Alignment.CenterVertically
-                  ) {
-                      IconButton(onClick = { vm.showProfile = false }) {
-                          Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại")
-                      }
-                      Text("Tài khoản", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                  }
-
-                  LazyColumn(Modifier.fillMaxSize()) {
-                      // ---- Tài khoản trên máy (lịch sử) ----
-                      if (vm.userKey == null) {
-                          item { LoginForm(vm) }
-                      } else {
-                          item { AccountHeader(vm) }
-                      }
-
-                      // ---- Kết nối YouTube ----
-                      item { GoogleSection(vm) }
-                      if (vm.googleSignedIn) {
-                          item {
-                              SectionHeader(
-                                  "Kênh đã đăng ký (${vm.subscriptions.size})",
-                                  "Làm mới"
-                              ) { vm.refreshSubscriptions() }
-                          }
-                          items(sortedSubs) { c -> ChannelRow(vm, c) }
-                      }
-
-                      // ---- Lịch sử ----
-                      if (vm.userKey != null) {
-                          item {
-                              SectionHeader(
-                                  "Lịch sử tìm kiếm",
-                                  if (vm.searchHistory.isEmpty()) null else "Xóa"
-                              ) { vm.clearSearchHistory() }
-                          }
-                          if (vm.searchHistory.isEmpty()) {
-                              item { EmptyNote("Chưa có tìm kiếm nào") }
-                          } else {
-                              items(vm.searchHistory) { q ->
-                                  Row(
-                                      Modifier
-                                          .fillMaxWidth()
-                                          .clickable {
-                                              vm.showProfile = false
-                                              vm.submitSearch(q)
-                                          }
-                                          .padding(horizontal = 16.dp, vertical = 12.dp),
-                                      verticalAlignment = Alignment.CenterVertically
-                                  ) {
-                                      Icon(
-                                          Icons.Filled.Search, null,
-                                          Modifier.size(20.dp),
-                                          tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                      )
-                                      Spacer(Modifier.width(16.dp))
-                                      Text(q, fontSize = 15.sp)
-                                  }
-                              }
-                          }
-
-                          item {
-                              SectionHeader(
-                                  "Lịch sử xem",
-                                  if (vm.history.isEmpty()) null else "Xóa tất cả"
-                              ) { vm.clearHistory() }
-                          }
-                          if (vm.history.isEmpty()) {
-                              item { EmptyNote("Chưa xem video nào") }
-                          } else {
-                              items(vm.history) { e ->
-                                  HistoryRow(e) { vm.play(e.url, e.title) }
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          private fun LoginForm(vm: MainViewModel) {
-              var name by remember { mutableStateOf("") }
-              var pass by remember { mutableStateOf("") }
-
-              Column(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(16.dp),
-                  verticalArrangement = Arrangement.spacedBy(12.dp)
-              ) {
-                  Text("Tài khoản trên máy", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                  Text(
-                      "Đăng nhập để lưu lịch sử xem và lịch sử tìm kiếm của bạn trong app.",
-                      fontSize = 14.sp
-                  )
-                  OutlinedTextField(
-                      value = name,
-                      onValueChange = { name = it },
-                      label = { Text("Tên đăng nhập") },
-                      singleLine = true,
-                      modifier = Modifier.fillMaxWidth()
-                  )
-                  OutlinedTextField(
-                      value = pass,
-                      onValueChange = { pass = it },
-                      label = { Text("Mật khẩu") },
-                      singleLine = true,
-                      visualTransformation = PasswordVisualTransformation(),
-                      keyboardOptions = KeyboardOptions(
-                          keyboardType = KeyboardType.Password,
-                          imeAction = ImeAction.Done
-                      ),
-                      keyboardActions = KeyboardActions(onDone = { vm.login(name, pass) }),
-                      modifier = Modifier.fillMaxWidth()
-                  )
-                  vm.loginError?.let {
-                      Text(it, color = MaterialTheme.colorScheme.error)
-                  }
-                  Button(onClick = { vm.login(name, pass) }, modifier = Modifier.fillMaxWidth()) {
-                      Text("Đăng nhập / Tạo tài khoản")
-                  }
-                  Text(
-                      "Tên chưa có sẽ tự tạo tài khoản mới. Dữ liệu lưu ngay trên điện thoại này.",
-                      fontSize = 12.sp,
-                      color = MaterialTheme.colorScheme.onSurfaceVariant
-                  )
-              }
-          }
-
-          @Composable
-          private fun AccountHeader(vm: MainViewModel) {
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(16.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  InitialBadge(vm.userName, 56.dp)
-                  Spacer(Modifier.width(16.dp))
-                  Column(Modifier.weight(1f)) {
-                      Text(vm.userName, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                      Text(
-                          "Tài khoản trên máy",
-                          fontSize = 12.sp,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                  }
-                  OutlinedButton(onClick = { vm.logout() }) { Text("Đăng xuất") }
-              }
-          }
-
-          @Composable
-          private fun GoogleSection(vm: MainViewModel) {
-              val ctx = LocalContext.current
-              val clipboard = LocalClipboardManager.current
-              var clientId by remember { mutableStateOf(vm.googleClientId()) }
-              var secret by remember { mutableStateOf(vm.googleClientSecret()) }
-              var editing by remember { mutableStateOf(false) }
-              val dim = MaterialTheme.colorScheme.onSurfaceVariant
-              val code = vm.deviceCode
-
-              Column(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(16.dp),
-                  verticalArrangement = Arrangement.spacedBy(10.dp)
-              ) {
-                  Text("Kết nối tài khoản YouTube", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-
-                  when {
-                      vm.googleSignedIn -> {
-                          Text(
-                              "Đã kết nối" +
-                                  (if (vm.googleChannelName.isNotBlank()) ": ${vm.googleChannelName}" else ""),
-                              fontSize = 14.sp
-                          )
-                          Text(
-                              "Bạn có thể đăng ký / hủy đăng ký kênh ngay trong app, và xem video mới của các kênh đã đăng ký ở mục \"Đăng ký\" trên trang chủ.",
-                              fontSize = 12.sp,
-                              color = dim
-                          )
-                          if (vm.googleBusy) CircularProgressIndicator(Modifier.size(24.dp))
-                          OutlinedButton(onClick = { vm.signOutGoogle() }) { Text("Ngắt kết nối") }
-                      }
-
-                      code != null -> {
-                          Text("1. Mở trang đăng nhập của Google:", fontSize = 14.sp)
-                          Button(onClick = {
-                              ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(code.url)))
-                          }) { Text("Mở " + code.url) }
-                          Text("2. Nhập mã này (đúng như hiển thị):", fontSize = 14.sp)
-                          Text(
-                              code.userCode,
-                              fontSize = 28.sp,
-                              fontWeight = FontWeight.Bold,
-                              letterSpacing = 2.sp
-                          )
-                          OutlinedButton(onClick = { clipboard.setText(AnnotatedString(code.userCode)) }) {
-                              Text("Sao chép mã")
-                          }
-                          Row(verticalAlignment = Alignment.CenterVertically) {
-                              CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                              Spacer(Modifier.width(10.dp))
-                              Text("Đang chờ bạn xác nhận trên Google…", fontSize = 12.sp, color = dim)
-                          }
-                          TextButton(onClick = { vm.cancelGoogleLogin() }) { Text("Hủy") }
-                      }
-
-                      !vm.googleConfigured || editing -> {
-                          Text(
-                              "Cần có Client ID và Client secret do bạn tự tạo trong Google Cloud Console (miễn phí, làm một lần):\n" +
-                                  "1. Vào console.cloud.google.com, tạo Project mới.\n" +
-                                  "2. Bật \"YouTube Data API v3\" trong APIs & Services > Library.\n" +
-                                  "3. Cấu hình màn hình đồng ý OAuth (External), thêm email của bạn vào Test users, rồi bấm Publish app để mã không hết hạn sau 7 ngày.\n" +
-                                  "4. Credentials > Create credentials > OAuth client ID > loại \"TVs and Limited Input devices\".\n" +
-                                  "5. Dán Client ID và Client secret vào hai ô bên dưới.",
-                              fontSize = 12.sp,
-                              color = dim
-                          )
-                          OutlinedTextField(
-                              value = clientId,
-                              onValueChange = { clientId = it },
-                              label = { Text("Client ID") },
-                              singleLine = true,
-                              modifier = Modifier.fillMaxWidth()
-                          )
-                          OutlinedTextField(
-                              value = secret,
-                              onValueChange = { secret = it },
-                              label = { Text("Client secret") },
-                              singleLine = true,
-                              modifier = Modifier.fillMaxWidth()
-                          )
-                          Button(
-                              onClick = {
-                                  vm.saveGoogleConfig(clientId, secret)
-                                  editing = false
-                              },
-                              enabled = clientId.isNotBlank() && secret.isNotBlank()
-                          ) { Text("Lưu") }
-                      }
-
-                      else -> {
-                          Text(
-                              "Đăng nhập Google để đăng ký kênh và xem video mới của các kênh đã đăng ký.",
-                              fontSize = 14.sp
-                          )
-                          Button(onClick = { vm.startGoogleLogin() }, enabled = !vm.googleBusy) {
-                              Text("Đăng nhập Google")
-                          }
-                          TextButton(onClick = { editing = true }) { Text("Sửa Client ID / Client secret") }
-                      }
-                  }
-
-                  vm.googleError?.let {
-                      Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                  }
-              }
-          }
-
-          @Composable
-          private fun ChannelRow(vm: MainViewModel, c: Channel) {
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(horizontal = 16.dp, vertical = 6.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  Avatar(c.thumb, 40.dp)
-                  Spacer(Modifier.width(12.dp))
-                  Text(
-                      c.title,
-                      fontSize = 15.sp,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis,
-                      modifier = Modifier.weight(1f)
-                  )
-                  TextButton(onClick = { vm.unsubscribe(c) }) { Text("Hủy đăng ký") }
-              }
-          }
-
-          @Composable
-          private fun SectionHeader(title: String, action: String?, onAction: () -> Unit) {
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .padding(start = 16.dp, end = 8.dp, top = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                  if (action != null) TextButton(onClick = onAction) { Text(action) }
-              }
-          }
-
-          @Composable
-          private fun EmptyNote(text: String) {
-              Text(
-                  text,
-                  fontSize = 13.sp,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-              )
-          }
-
-          @Composable
-          private fun HistoryRow(e: HistoryEntry, onClick: () -> Unit) {
-              Row(
-                  Modifier
-                      .fillMaxWidth()
-                      .clickable(onClick = onClick)
-                      .padding(horizontal = 12.dp, vertical = 6.dp)
-              ) {
-                  Box {
-                      AsyncImage(
-                          model = e.thumb,
-                          contentDescription = null,
-                          contentScale = ContentScale.Crop,
-                          modifier = Modifier
-                              .width(140.dp)
-                              .aspectRatio(16 / 9f)
-                              .clip(RoundedCornerShape(8.dp))
-                              .background(MaterialTheme.colorScheme.surfaceVariant)
-                      )
-                      if (e.duration > 0) {
-                          Text(
-                              formatDuration(e.duration),
-                              color = Color.White,
-                              fontSize = 11.sp,
-                              fontWeight = FontWeight.SemiBold,
-                              modifier = Modifier
-                                  .align(Alignment.BottomEnd)
-                                  .padding(4.dp)
-                                  .clip(RoundedCornerShape(4.dp))
-                                  .background(Color(0xCC000000))
-                                  .padding(horizontal = 4.dp, vertical = 1.dp)
-                          )
-                      }
-                  }
-                  Spacer(Modifier.width(12.dp))
-                  Column {
-                      Text(
-                          e.title,
-                          maxLines = 2,
-                          overflow = TextOverflow.Ellipsis,
-                          fontSize = 14.sp,
-                          lineHeight = 19.sp,
-                          fontWeight = FontWeight.Medium
-                      )
-                      Text(
-                          e.uploader,
-                          maxLines = 1,
-                          overflow = TextOverflow.Ellipsis,
-                          fontSize = 12.sp,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/Theme.kt <<'EOF'
-          package com.example.adfreetube
-
-          import androidx.compose.foundation.isSystemInDarkTheme
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.darkColorScheme
-          import androidx.compose.material3.lightColorScheme
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.SideEffect
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.graphics.toArgb
-          import androidx.compose.ui.platform.LocalView
-          import androidx.core.view.WindowCompat
-
-          private val DarkColors = darkColorScheme(
-              primary = Color(0xFF3EA6FF),
-              background = Color(0xFF0F0F0F),
-              surface = Color(0xFF0F0F0F),
-              onBackground = Color.White,
-              onSurface = Color.White,
-              surfaceVariant = Color(0xFF272727),
-              onSurfaceVariant = Color(0xFFAAAAAA),
-              error = Color(0xFFFF6B6B)
-          )
-
-          private val LightColors = lightColorScheme(
-              primary = Color(0xFF065FD4),
-              background = Color.White,
-              surface = Color.White,
-              onBackground = Color(0xFF0F0F0F),
-              onSurface = Color(0xFF0F0F0F),
-              surfaceVariant = Color(0xFFF2F2F2),
-              onSurfaceVariant = Color(0xFF606060)
-          )
-
-          @Composable
-          fun AdFreeTheme(content: @Composable () -> Unit) {
-              val dark = isSystemInDarkTheme()
-              val colors = if (dark) DarkColors else LightColors
-              val view = LocalView.current
-              if (!view.isInEditMode) {
-                  SideEffect {
-                      val window = view.context.findActivity()?.window ?: return@SideEffect
-                      window.statusBarColor = colors.background.toArgb()
-                      window.navigationBarColor = colors.background.toArgb()
-                      val controller = WindowCompat.getInsetsController(window, view)
-                      controller.isAppearanceLightStatusBars = !dark
-                      controller.isAppearanceLightNavigationBars = !dark
-                  }
-              }
-              MaterialTheme(colorScheme = colors, content = content)
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/UserStore.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.content.Context
-          import org.json.JSONArray
-          import org.json.JSONObject
-          import java.security.MessageDigest
-          import java.security.SecureRandom
-
-          data class HistoryEntry(
-              val url: String,
-              val title: String,
-              val uploader: String,
-              val thumb: String?,
-              val duration: Long,
-              val time: Long
-          )
-
-          /**
-           * Tài khoản cục bộ: tên + mật khẩu (băm SHA-256 có muối), lịch sử xem và lịch sử tìm kiếm
-           * của từng tài khoản. Tất cả lưu trên chính điện thoại này.
-           */
-          class UserStore(context: Context) {
-              private val prefs = context.getSharedPreferences("bangnc_tube", Context.MODE_PRIVATE)
-
-              private fun users() = JSONObject(prefs.getString("users", "{}") ?: "{}")
-
-              fun currentUser(): String? = prefs.getString("current_user", null)
-
-              fun displayName(key: String): String = users().optJSONObject(key)?.optString("name", key) ?: key
-
-              fun logout() {
-                  prefs.edit().remove("current_user").apply()
-              }
-
-              /** Tên đã có -> kiểm tra mật khẩu; tên chưa có -> tạo mới. Trả về null nếu OK, ngược lại là thông báo lỗi. */
-              fun loginOrRegister(name: String, password: String): String? {
-                  val n = name.trim()
-                  if (n.length < 2) return "Tên cần ít nhất 2 ký tự"
-                  if (password.length < 4) return "Mật khẩu cần ít nhất 4 ký tự"
-                  val users = users()
-                  val key = n.lowercase()
-                  if (users.has(key)) {
-                      val u = users.getJSONObject(key)
-                      if (hash(password, u.getString("salt")) != u.getString("hash")) return "Sai mật khẩu"
-                  } else {
-                      val salt = newSalt()
-                      users.put(
-                          key,
-                          JSONObject().put("name", n).put("salt", salt).put("hash", hash(password, salt))
-                      )
-                      prefs.edit().putString("users", users.toString()).apply()
-                  }
-                  prefs.edit().putString("current_user", key).apply()
-                  return null
-              }
-
-              // ---------- Lịch sử xem ----------
-              fun history(user: String): List<HistoryEntry> {
-                  val arr = JSONArray(prefs.getString("history_$user", "[]") ?: "[]")
-                  return (0 until arr.length()).map { i ->
-                      val o = arr.getJSONObject(i)
-                      HistoryEntry(
-                          o.getString("url"),
-                          o.optString("title"),
-                          o.optString("uploader"),
-                          o.optString("thumb").ifEmpty { null },
-                          o.optLong("duration", -1),
-                          o.optLong("time")
-                      )
-                  }
-              }
-
-              fun addHistory(user: String, e: HistoryEntry) {
-                  val list = (listOf(e) + history(user).filter { it.url != e.url }).take(200)
-                  val arr = JSONArray()
-                  list.forEach {
-                      arr.put(
-                          JSONObject()
-                              .put("url", it.url)
-                              .put("title", it.title)
-                              .put("uploader", it.uploader)
-                              .put("thumb", it.thumb ?: "")
-                              .put("duration", it.duration)
-                              .put("time", it.time)
-                      )
-                  }
-                  prefs.edit().putString("history_$user", arr.toString()).apply()
-              }
-
-              fun clearHistory(user: String) {
-                  prefs.edit().remove("history_$user").apply()
-              }
-
-              // ---------- Lịch sử tìm kiếm ----------
-              fun searches(user: String): List<String> {
-                  val arr = JSONArray(prefs.getString("search_$user", "[]") ?: "[]")
-                  return (0 until arr.length()).map { arr.getString(it) }
-              }
-
-              fun addSearch(user: String, q: String) {
-                  val list = (listOf(q) + searches(user).filter { !it.equals(q, ignoreCase = true) }).take(30)
-                  val arr = JSONArray()
-                  list.forEach { arr.put(it) }
-                  prefs.edit().putString("search_$user", arr.toString()).apply()
-              }
-
-              fun clearSearches(user: String) {
-                  prefs.edit().remove("search_$user").apply()
-              }
-
-              private fun hash(password: String, salt: String): String =
-                  MessageDigest.getInstance("SHA-256")
-                      .digest((salt + password).toByteArray())
-                      .joinToString("") { "%02x".format(it) }
-
-              private fun newSalt(): String {
-                  val b = ByteArray(16)
-                  SecureRandom().nextBytes(b)
-                  return b.joinToString("") { "%02x".format(it) }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/WatchScreen.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.content.Intent
-          import android.os.Bundle
-          import androidx.compose.foundation.background
-          import androidx.compose.foundation.clickable
-          import androidx.compose.foundation.horizontalScroll
-          import androidx.compose.foundation.layout.Arrangement
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.Column
-          import androidx.compose.foundation.layout.Row
-          import androidx.compose.foundation.layout.Spacer
-          import androidx.compose.foundation.layout.aspectRatio
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.foundation.layout.fillMaxWidth
-          import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.foundation.rememberScrollState
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.filled.Settings
-          import androidx.compose.material.icons.filled.Share
-          import androidx.compose.material.icons.filled.ThumbUp
-          import androidx.compose.material3.Button
-          import androidx.compose.material3.ButtonDefaults
-          import androidx.compose.material3.CircularProgressIndicator
-          import androidx.compose.material3.DropdownMenu
-          import androidx.compose.material3.DropdownMenuItem
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.OutlinedButton
-          import androidx.compose.material3.Text
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.DisposableEffect
-          import androidx.compose.runtime.LaunchedEffect
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableStateOf
-          import androidx.compose.runtime.remember
-          import androidx.compose.runtime.setValue
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.style.TextOverflow
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import androidx.compose.ui.viewinterop.AndroidView
-          import androidx.media3.common.MediaItem
-          import androidx.media3.common.MediaMetadata
-          import androidx.media3.session.SessionCommand
-          import androidx.media3.ui.PlayerView
-
-          @Composable
-          fun WatchScreen(vm: MainViewModel) {
-              val w = vm.watch
-              val quality = w?.qualities?.getOrNull(vm.selectedQuality)
-              val player = vm.player
-              val ctl = vm.controller
-              val big = vm.fullscreen || vm.inPip
-
-              // Gỡ PlayerView khỏi trình phát khi rời màn hình (trình phát vẫn sống trong dịch vụ nền)
-              val holder = remember { arrayOfNulls<PlayerView>(1) }
-              DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
-
-              // Nạp video mới / đổi chất lượng (giữ nguyên vị trí đang xem khi chỉ đổi chất lượng)
-              var lastPage by remember { mutableStateOf<String?>(null) }
-              LaunchedEffect(w?.pageUrl, quality?.url, quality?.audioUrl, ctl) {
-                  if (w == null || quality == null || ctl == null) return@LaunchedEffect
-                  val pos = if (lastPage == w.pageUrl) ctl.currentPosition else 0L
-                  lastPage = w.pageUrl
-                  vm.playerError = null
-                  if (quality.audioUrl != null) {
-                      // Hình và tiếng tách riêng: nhờ dịch vụ nền ghép lại rồi phát
-                      val args = Bundle().apply {
-                          putString("video", quality.url)
-                          putString("audio", quality.audioUrl)
-                          putString("title", w.title)
-                          putString("artist", w.uploader)
-                          putLong("pos", pos)
-                      }
-                      ctl.sendCustomCommand(SessionCommand(PlaybackService.CMD_PLAY_MERGED, Bundle.EMPTY), args)
-                  } else {
-                      val item = MediaItem.Builder()
-                          .setUri(quality.url)
-                          .setMediaMetadata(
-                              MediaMetadata.Builder()
-                                  .setTitle(w.title)
-                                  .setArtist(w.uploader)
-                                  .build()
-                          )
-                          .build()
-                      ctl.setMediaItem(item, pos)
-                      ctl.prepare()
-                      ctl.play()
-                  }
-              }
-
-              Column(Modifier.fillMaxSize()) {
-                  Box(
-                      (if (big) Modifier.fillMaxSize()
-                      else Modifier
-                          .fillMaxWidth()
-                          .aspectRatio(16 / 9f))
-                          .background(Color.Black)
-                  ) {
-                      AndroidView(
-                          factory = { c ->
-                              PlayerView(c).apply {
-                                  setShowNextButton(false)
-                                  setShowPreviousButton(false)
-                                  setFullscreenButtonClickListener { isFull -> vm.fullscreen = isFull }
-                              }.also { holder[0] = it }
-                          },
-                          update = { view ->
-                              view.player = player
-                              view.useController = !vm.inPip
-                          },
-                          modifier = Modifier.fillMaxSize()
-                      )
-                      if (w == null && vm.watchLoading && !vm.inPip) {
-                          CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White)
-                      }
-                  }
-
-                  if (!big) {
-                      if (w == null) {
-                          Column(Modifier.padding(12.dp)) {
-                              if (vm.watchTitleHint.isNotEmpty()) {
-                                  Text(vm.watchTitleHint, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                              }
-                              vm.watchError?.let {
-                                  Spacer(Modifier.height(12.dp))
-                                  Text(it, color = MaterialTheme.colorScheme.error)
-                              }
-                          }
-                      } else {
-                          WatchDetails(vm, w)
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          private fun WatchDetails(vm: MainViewModel, w: WatchState) {
-              val ctx = LocalContext.current
-              val dim = MaterialTheme.colorScheme.onSurfaceVariant
-
-              LazyColumn(Modifier.fillMaxSize()) {
-                  vm.playerError?.let { msg ->
-                      item {
-                          Text(
-                              msg,
-                              color = MaterialTheme.colorScheme.error,
-                              fontSize = 13.sp,
-                              modifier = Modifier.padding(12.dp)
-                          )
-                      }
-                  }
-
-                  // Tiêu đề
-                  item {
-                      Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp)) {
-                          Text(
-                              w.title,
-                              fontSize = 18.sp,
-                              lineHeight = 24.sp,
-                              fontWeight = FontWeight.SemiBold
-                          )
-                      }
-                  }
-
-                  // Kênh + nút Đăng ký
-                  item {
-                      Row(
-                          Modifier
-                              .fillMaxWidth()
-                              .padding(12.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Avatar(w.avatar, 40.dp)
-                          Spacer(Modifier.width(12.dp))
-                          Column(Modifier.weight(1f)) {
-                              Text(
-                                  w.uploader,
-                                  fontWeight = FontWeight.SemiBold,
-                                  fontSize = 15.sp,
-                                  maxLines = 1,
-                                  overflow = TextOverflow.Ellipsis
-                              )
-                              if (w.subscribers >= 0) {
-                                  Text(
-                                      formatCount(w.subscribers) + " người đăng ký",
-                                      fontSize = 12.sp,
-                                      color = dim
-                                  )
-                              }
-                          }
-                          val channelId = w.channelId
-                          if (channelId != null) {
-                              if (vm.isSubscribed(channelId)) {
-                                  OutlinedButton(
-                                      onClick = { vm.toggleSubscribe(channelId) },
-                                      enabled = !vm.subBusy
-                                  ) { Text("Đã đăng ký") }
-                              } else {
-                                  Button(
-                                      onClick = { vm.toggleSubscribe(channelId) },
-                                      enabled = !vm.subBusy,
-                                      colors = ButtonDefaults.buttonColors(
-                                          containerColor = Color(0xFFCC0000),
-                                          contentColor = Color.White
-                                      )
-                                  ) { Text("Đăng ký") }
-                              }
-                          }
-                      }
-                  }
-                  vm.subMessage?.let { msg ->
-                      item {
-                          Text(
-                              msg,
-                              color = MaterialTheme.colorScheme.error,
-                              fontSize = 12.sp,
-                              modifier = Modifier.padding(horizontal = 12.dp)
-                          )
-                      }
-                  }
-
-                  // Hàng nút: lượt thích, chia sẻ, chất lượng
-                  item {
-                      var menu by remember { mutableStateOf(false) }
-                      Row(
-                          Modifier
-                              .horizontalScroll(rememberScrollState())
-                              .padding(horizontal = 12.dp, vertical = 4.dp),
-                          horizontalArrangement = Arrangement.spacedBy(8.dp)
-                      ) {
-                          if (w.likes >= 0) Pill(formatCount(w.likes), Icons.Filled.ThumbUp)
-                          Pill("Chia sẻ", Icons.Filled.Share) {
-                              val send = Intent(Intent.ACTION_SEND).apply {
-                                  type = "text/plain"
-                                  putExtra(Intent.EXTRA_TEXT, w.pageUrl)
-                              }
-                              ctx.startActivity(Intent.createChooser(send, "Chia sẻ video"))
-                          }
-                          Box {
-                              Pill(
-                                  w.qualities.getOrNull(vm.selectedQuality)?.label ?: "Chất lượng",
-                                  Icons.Filled.Settings
-                              ) { menu = true }
-                              DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                  w.qualities.forEachIndexed { i, q ->
-                                      DropdownMenuItem(
-                                          text = {
-                                              Text(
-                                                  q.label,
-                                                  fontWeight = if (i == vm.selectedQuality) FontWeight.Bold
-                                                  else FontWeight.Normal
-                                              )
-                                          },
-                                          onClick = {
-                                              vm.selectedQuality = i
-                                              menu = false
-                                          }
-                                      )
-                                  }
-                              }
-                          }
-                      }
-                  }
-
-                  // Mô tả
-                  item {
-                      var expanded by remember(w.pageUrl) { mutableStateOf(false) }
-                      val meta = listOfNotNull(
-                          w.views.takeIf { it >= 0 }?.let { formatCount(it) + " lượt xem" },
-                          w.date.takeIf { it.isNotBlank() }
-                      ).joinToString("  ")
-                      Column(
-                          Modifier
-                              .padding(12.dp)
-                              .fillMaxWidth()
-                              .clip(RoundedCornerShape(12.dp))
-                              .background(MaterialTheme.colorScheme.surfaceVariant)
-                              .clickable { expanded = !expanded }
-                              .padding(12.dp)
-                      ) {
-                          if (meta.isNotEmpty()) {
-                              Text(meta, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                              Spacer(Modifier.height(4.dp))
-                          }
-                          if (w.description.isNotBlank()) {
-                              Text(
-                                  w.description,
-                                  fontSize = 13.sp,
-                                  maxLines = if (expanded) Int.MAX_VALUE else 3,
-                                  overflow = TextOverflow.Ellipsis
-                              )
-                          }
-                      }
-                  }
-
-                  // Video đề xuất
-                  items(w.related) { item ->
-                      VideoCard(item) { vm.play(item.url, item.name) }
-                  }
-              }
-          }
-          EOF
-          mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/YouTubeApi.kt <<'EOF'
-          package com.example.adfreetube
-
-          import android.util.Xml
-          import okhttp3.MediaType.Companion.toMediaType
-          import okhttp3.OkHttpClient
-          import okhttp3.Request
-          import okhttp3.RequestBody.Companion.toRequestBody
-          import org.json.JSONObject
-          import org.xmlpull.v1.XmlPullParser
-          import java.io.StringReader
-          import java.time.OffsetDateTime
-
-          data class Channel(val id: String, val title: String, val thumb: String?, val subId: String)
-
-          data class FeedVideo(
-              val url: String,
-              val title: String,
-              val author: String,
-              val thumb: String,
-              val published: Long
-          )
-
-          /** YouTube Data API v3 (chính thức): danh sách kênh đăng ký, đăng ký, hủy đăng ký. */
-          class YouTubeApi(private val auth: GoogleAuth) {
-              private val http = OkHttpClient()
-              private val json = "application/json; charset=utf-8".toMediaType()
-              private val base = "https://www.googleapis.com/youtube/v3"
-
-              private fun call(method: String, url: String, body: String? = null): JSONObject {
-                  val token = auth.accessToken()
-                  val requestBody = if (method == "POST") (body ?: "").toRequestBody(json) else null
-                  val req = Request.Builder()
-                      .url(url)
-                      .header("Authorization", "Bearer $token")
-                      .method(method, requestBody)
-                      .build()
-                  http.newCall(req).execute().use { r ->
-                      val text = r.body?.string() ?: ""
-                      if (!r.isSuccessful) throw IllegalStateException(errorMessage(r.code, text))
-                      return if (text.isBlank()) JSONObject() else JSONObject(text)
-                  }
-              }
-
-              private fun errorMessage(code: Int, text: String): String {
-                  val msg = try {
-                      JSONObject(text).optJSONObject("error")?.optString("message")
-                  } catch (e: Exception) {
-                      null
-                  }
-                  return when {
-                      code == 403 && msg?.contains("quota", ignoreCase = true) == true ->
-                          "Hết hạn mức YouTube API hôm nay, hãy thử lại sau"
-                      !msg.isNullOrBlank() -> msg
-                      else -> "Lỗi YouTube API ($code)"
-                  }
-              }
-
-              fun myChannelName(): String {
-                  val j = call("GET", "$base/channels?part=snippet&mine=true")
-                  return j.optJSONArray("items")?.optJSONObject(0)
-                      ?.optJSONObject("snippet")?.optString("title") ?: ""
-              }
-
-              fun subscriptions(): List<Channel> {
-                  val out = ArrayList<Channel>()
-                  var page: String? = null
-                  var n = 0
-                  do {
-                      val url = "$base/subscriptions?part=snippet&mine=true&maxResults=50&order=alphabetical" +
-                          (page?.let { "&pageToken=$it" } ?: "")
-                      val j = call("GET", url)
-                      val items = j.optJSONArray("items")
-                      if (items != null) {
-                          for (i in 0 until items.length()) {
-                              val o = items.getJSONObject(i)
-                              val sn = o.getJSONObject("snippet")
-                              out.add(
-                                  Channel(
-                                      sn.getJSONObject("resourceId").getString("channelId"),
-                                      sn.optString("title"),
-                                      sn.optJSONObject("thumbnails")?.optJSONObject("default")?.optString("url"),
-                                      o.getString("id")
-                                  )
-                              )
-                          }
-                      }
-                      page = j.optString("nextPageToken").ifEmpty { null }
-                      n++
-                  } while (page != null && n < 20)
-                  return out
-              }
-
-              fun subscribe(channelId: String): Channel {
-                  val body = JSONObject().put(
-                      "snippet",
-                      JSONObject().put(
-                          "resourceId",
-                          JSONObject().put("kind", "youtube#channel").put("channelId", channelId)
-                      )
-                  ).toString()
-                  val j = call("POST", "$base/subscriptions?part=snippet", body)
-                  val sn = j.getJSONObject("snippet")
-                  return Channel(
-                      channelId,
-                      sn.optString("title"),
-                      sn.optJSONObject("thumbnails")?.optJSONObject("default")?.optString("url"),
-                      j.getString("id")
-                  )
-              }
-
-              fun unsubscribe(subscriptionId: String) {
-                  call("DELETE", "$base/subscriptions?id=$subscriptionId")
-              }
-
-              /**
-               * Video mới của một kênh: ưu tiên API chính thức (danh sách video tải lên của kênh),
-               * nếu lỗi thì thử RSS công khai. Cả hai cùng lỗi thì báo lỗi của API.
-               */
-              fun channelVideos(channelId: String): List<FeedVideo> {
-                  var apiError: String? = null
-                  try {
-                      val v = playlistVideos(channelId)
-                      if (v.isNotEmpty()) return v
-                  } catch (e: Exception) {
-                      apiError = e.message
-                  }
-                  val rss = try {
-                      channelFeed(channelId)
-                  } catch (e: Exception) {
-                      emptyList()
-                  }
-                  if (rss.isEmpty() && apiError != null) throw IllegalStateException(apiError)
-                  return rss
-              }
-
-              private fun playlistVideos(channelId: String): List<FeedVideo> {
-                  // Danh sách "video đã tải lên" của kênh có id giống id kênh, chỉ đổi UC -> UU
-                  val uploads = "UU" + channelId.removePrefix("UC")
-                  val j = call("GET", "$base/playlistItems?part=snippet&maxResults=10&playlistId=$uploads")
-                  val items = j.optJSONArray("items") ?: return emptyList()
-                  val out = ArrayList<FeedVideo>()
-                  for (i in 0 until items.length()) {
-                      val sn = items.getJSONObject(i).optJSONObject("snippet") ?: continue
-                      val id = sn.optJSONObject("resourceId")?.optString("videoId").orEmpty()
-                      if (id.isEmpty()) continue
-                      val title = sn.optString("title")
-                      if (title == "Private video" || title == "Deleted video") continue
-                      val author = sn.optString("videoOwnerChannelTitle").ifEmpty { sn.optString("channelTitle") }
-                      out.add(
-                          FeedVideo(
-                              "https://www.youtube.com/watch?v=$id",
-                              title,
-                              author,
-                              "https://i.ytimg.com/vi/$id/hqdefault.jpg",
-                              parseDate(sn.optString("publishedAt"))
-                          )
-                      )
-                  }
-                  return out
-              }
-
-              /** Video mới của một kênh qua RSS công khai (không tốn hạn mức API). */
-              fun channelFeed(channelId: String): List<FeedVideo> {
-                  val req = Request.Builder()
-                      .url("https://www.youtube.com/feeds/videos.xml?channel_id=$channelId")
-                      .header("User-Agent", DownloaderImpl.USER_AGENT)
-                      .build()
-                  http.newCall(req).execute().use { r ->
-                      if (!r.isSuccessful) return emptyList()
-                      return parseFeed(r.body?.string() ?: "")
-                  }
-              }
-
-              private fun parseFeed(xml: String): List<FeedVideo> {
-                  val parser = Xml.newPullParser()
-                  parser.setInput(StringReader(xml))
-                  val list = ArrayList<FeedVideo>()
-                  var inEntry = false
-                  var tag = ""
-                  var id = ""
-                  var title = ""
-                  var author = ""
-                  var published = 0L
-                  var ev = parser.eventType
-                  while (ev != XmlPullParser.END_DOCUMENT) {
-                      when (ev) {
-                          XmlPullParser.START_TAG -> {
-                              tag = parser.name
-                              if (tag == "entry") {
-                                  inEntry = true
-                                  id = ""
-                                  title = ""
-                                  published = 0L
-                              }
-                          }
-                          XmlPullParser.TEXT -> {
-                              val t = parser.text.trim()
-                              if (t.isNotEmpty()) {
-                                  when (tag) {
-                                      "yt:videoId" -> if (inEntry) id = t
-                                      "title" -> if (inEntry && title.isEmpty()) title = t
-                                      "published" -> if (inEntry) published = parseDate(t)
-                                      "name" -> author = t
-                                  }
-                              }
-                          }
-                          XmlPullParser.END_TAG -> {
-                              if (parser.name == "entry") {
-                                  inEntry = false
-                                  if (id.isNotEmpty()) {
-                                      list.add(
-                                          FeedVideo(
-                                              "https://www.youtube.com/watch?v=$id",
-                                              title,
-                                              author,
-                                              "https://i.ytimg.com/vi/$id/hqdefault.jpg",
-                                              published
-                                          )
-                                      )
-                                  }
-                              }
-                              tag = ""
-                          }
-                      }
-                      ev = parser.next()
-                  }
-                  return list
-              }
-
-              private fun parseDate(s: String): Long = try {
-                  OffsetDateTime.parse(s).toInstant().toEpochMilli()
-              } catch (e: Exception) {
-                  0L
-              }
-          }
-          EOF
-          mkdir -p app/src/main/res/drawable
-          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#FF0000"
-                  android:pathData="M37,36 H71 A9,9 0 0 1 80,45 V63 A9,9 0 0 1 71,72 H37 A9,9 0 0 1 28,63 V45 A9,9 0 0 1 37,36 Z" />
-              <path
-                  android:fillColor="#FFFFFF"
-                  android:pathData="M48,46 L48,62 L62,54 Z" />
-          </vector>
-          EOF
-          mkdir -p app/src/main/res/mipmap-anydpi-v26
-          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-              <background android:drawable="@color/ic_launcher_background" />
-              <foreground android:drawable="@drawable/ic_launcher_foreground" />
-          </adaptive-icon>
-          EOF
-          mkdir -p app/src/main/res/mipmap-mdpi
-          cat > app/src/main/res/mipmap-mdpi/ic_launcher.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="96dp"
-              android:height="96dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#FFFFFF"
-                  android:pathData="M0,0 H108 V108 H0 Z" />
-              <path
-                  android:fillColor="#FF0000"
-                  android:pathData="M33,32 H75 A10,10 0 0 1 85,42 V66 A10,10 0 0 1 75,76 H33 A10,10 0 0 1 23,66 V42 A10,10 0 0 1 33,32 Z" />
-              <path
-                  android:fillColor="#FFFFFF"
-                  android:pathData="M46,44 L46,64 L64,54 Z" />
-          </vector>
-          EOF
-          mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/colors.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <color name="ic_launcher_background">#FFFFFF</color>
-          </resources>
-          EOF
-          mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/strings.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <string name="app_name">BangNC _ Tube</string>
-          </resources>
-          EOF
-          cat > build.gradle.kts <<'EOF'
-          plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-          }
-          EOF
-          cat > gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx2048m
-          android.useAndroidX=true
-          kotlin.code.style=official
-          EOF
-          cat > settings.gradle.kts <<'EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven("https://jitpack.io") // NewPipeExtractor
-              }
-          }
-          rootProject.name = "AdFreeTube"
-          include(":app")
-          EOF
+          base64 -d <<'B64' | tar xz
+          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
+          B64
       - name: Build APK
         run: |
           set -o pipefail
