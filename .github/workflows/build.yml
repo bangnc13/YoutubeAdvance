@@ -6,10 +6,10 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -49,7 +49,7 @@ jobs:
           }
 
           dependencies {
-              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
               // Lấy dữ liệu YouTube không quảng cáo. Bản v0.25.1 trở lên đã sửa lỗi
               // "The page needs to be reloaded". Kiểm tra bản mới nhất tại
@@ -1221,7 +1221,16 @@ jobs:
           include(":app")
           EOF
       - name: Build APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
+      - name: Tom tat loi
+        if: failure()
+        run: |
+          echo '### Loi build (gui anh phan nay cho Claude)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "^e: |What went wrong|Could not|FAILED|Execution failed|Unsupported|error:" -A4 build.log | head -80 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: AdFreeTube-apk
