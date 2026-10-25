@@ -62,6 +62,7 @@ jobs:
               implementation("androidx.media3:media3-exoplayer-hls:$media3")
               implementation("androidx.media3:media3-ui:$media3")
               implementation("androidx.media3:media3-session:$media3")
+              implementation("com.google.guava:guava:33.2.1-android")
 
               implementation(platform("androidx.compose:compose-bom:2024.06.00"))
               implementation("androidx.compose.material3:material3")
@@ -305,6 +306,43 @@ jobs:
                   }
               }
           }
+
+          /** Thẻ video cho mục "Đăng ký" (dữ liệu từ RSS của kênh). */
+          @Composable
+          fun FeedCard(v: FeedVideo, onClick: () -> Unit) {
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .clickable(onClick = onClick)
+                      .padding(bottom = 16.dp)
+              ) {
+                  AsyncImage(
+                      model = v.thumb,
+                      contentDescription = null,
+                      contentScale = ContentScale.Crop,
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .aspectRatio(16 / 9f)
+                          .background(MaterialTheme.colorScheme.surfaceVariant)
+                  )
+                  Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                      Text(
+                          v.title,
+                          maxLines = 2,
+                          overflow = TextOverflow.Ellipsis,
+                          fontSize = 15.sp,
+                          lineHeight = 20.sp,
+                          fontWeight = FontWeight.Medium
+                      )
+                      Spacer(Modifier.height(2.dp))
+                      Text(
+                          listOf(v.author, timeAgo(v.published)).filter { it.isNotBlank() }.joinToString(" • "),
+                          fontSize = 12.sp,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                  }
+              }
+          }
           EOF
           mkdir -p app/src/main/java/com/example/adfreetube
           cat > app/src/main/java/com/example/adfreetube/DownloaderImpl.kt <<'EOF'
@@ -405,6 +443,151 @@ jobs:
               "c=ANDROID" in url -> ANDROID_UA
               else -> DownloaderImpl.USER_AGENT
           }
+
+          fun timeAgo(ms: Long): String {
+              if (ms <= 0) return ""
+              val diff = (System.currentTimeMillis() - ms) / 1000
+              return when {
+                  diff < 60 -> "Vừa xong"
+                  diff < 3600 -> "${diff / 60} phút trước"
+                  diff < 86400 -> "${diff / 3600} giờ trước"
+                  diff < 86400L * 30 -> "${diff / 86400} ngày trước"
+                  diff < 86400L * 365 -> "${diff / (86400L * 30)} tháng trước"
+                  else -> "${diff / (86400L * 365)} năm trước"
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/GoogleAuth.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.content.Context
+          import okhttp3.FormBody
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import org.json.JSONObject
+
+          /**
+           * Đăng nhập Google bằng "device flow" chính thức của Google (nhập mã tại google.com/device).
+           * Người dùng tự tạo Client ID / Client secret trong Google Cloud Console và dán vào app.
+           */
+          class GoogleAuth(context: Context) {
+              private val prefs = context.getSharedPreferences("bangnc_google", Context.MODE_PRIVATE)
+              private val http = OkHttpClient()
+
+              class DeviceCode(
+                  val deviceCode: String,
+                  val userCode: String,
+                  val url: String,
+                  val interval: Int,
+                  val expiresIn: Int
+              )
+
+              var clientId: String
+                  get() = prefs.getString("client_id", "") ?: ""
+                  set(v) {
+                      prefs.edit().putString("client_id", v.trim()).apply()
+                  }
+
+              var clientSecret: String
+                  get() = prefs.getString("client_secret", "") ?: ""
+                  set(v) {
+                      prefs.edit().putString("client_secret", v.trim()).apply()
+                  }
+
+              val isConfigured: Boolean get() = clientId.isNotBlank() && clientSecret.isNotBlank()
+              val isSignedIn: Boolean get() = !prefs.getString("refresh_token", null).isNullOrEmpty()
+
+              fun requestDeviceCode(): DeviceCode {
+                  val json = post(
+                      "https://oauth2.googleapis.com/device/code",
+                      mapOf("client_id" to clientId, "scope" to "https://www.googleapis.com/auth/youtube")
+                  )
+                  if (json.has("error")) {
+                      throw IllegalStateException(json.optString("error_description", json.optString("error")))
+                  }
+                  return DeviceCode(
+                      json.getString("device_code"),
+                      json.getString("user_code"),
+                      json.optString("verification_url", "https://www.google.com/device"),
+                      json.optInt("interval", 5),
+                      json.optInt("expires_in", 1800)
+                  )
+              }
+
+              /** true = đã được duyệt và lưu token; false = người dùng chưa xác nhận, cứ chờ tiếp. */
+              fun pollToken(code: DeviceCode): Boolean {
+                  val json = post(
+                      TOKEN_URL,
+                      mapOf(
+                          "client_id" to clientId,
+                          "client_secret" to clientSecret,
+                          "device_code" to code.deviceCode,
+                          "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"
+                      )
+                  )
+                  val err = json.optString("error")
+                  if (err == "authorization_pending" || err == "slow_down") return false
+                  if (err.isNotEmpty()) {
+                      throw IllegalStateException(json.optString("error_description", err))
+                  }
+                  saveTokens(json)
+                  return true
+              }
+
+              fun accessToken(): String {
+                  val token = prefs.getString("access_token", null)
+                  if (token != null && System.currentTimeMillis() < prefs.getLong("expires_at", 0L)) return token
+
+                  val refresh = prefs.getString("refresh_token", null)
+                      ?: throw IllegalStateException("Chưa đăng nhập Google")
+                  val json = post(
+                      TOKEN_URL,
+                      mapOf(
+                          "client_id" to clientId,
+                          "client_secret" to clientSecret,
+                          "refresh_token" to refresh,
+                          "grant_type" to "refresh_token"
+                      )
+                  )
+                  if (json.has("error")) {
+                      if (json.optString("error") == "invalid_grant") signOut()
+                      throw IllegalStateException("Phiên đăng nhập Google đã hết hạn, hãy đăng nhập lại")
+                  }
+                  saveTokens(json)
+                  return json.getString("access_token")
+              }
+
+              fun signOut() {
+                  prefs.edit()
+                      .remove("access_token")
+                      .remove("refresh_token")
+                      .remove("expires_at")
+                      .apply()
+              }
+
+              private fun saveTokens(json: JSONObject) {
+                  val e = prefs.edit()
+                  e.putString("access_token", json.getString("access_token"))
+                  e.putLong("expires_at", System.currentTimeMillis() + (json.optLong("expires_in", 3600) - 60) * 1000)
+                  val rt = json.optString("refresh_token")
+                  if (rt.isNotEmpty()) e.putString("refresh_token", rt)
+                  e.apply()
+              }
+
+              private fun post(url: String, params: Map<String, String>): JSONObject {
+                  val body = FormBody.Builder().apply {
+                      params.forEach { (k, v) -> add(k, v) }
+                  }.build()
+                  http.newCall(Request.Builder().url(url).post(body).build()).execute().use { r ->
+                      return JSONObject(r.body?.string() ?: "{}")
+                  }
+              }
+
+              private companion object {
+                  const val TOKEN_URL = "https://oauth2.googleapis.com/token"
+              }
+          }
           EOF
           mkdir -p app/src/main/java/com/example/adfreetube
           cat > app/src/main/java/com/example/adfreetube/HomeScreen.kt <<'EOF'
@@ -469,7 +652,7 @@ jobs:
                   } else {
                       HomeTopBar(vm)
                       Chips(vm)
-                      Feed(vm)
+                      if (vm.subsMode) SubsFeed(vm) else Feed(vm)
                   }
               }
           }
@@ -575,19 +758,52 @@ jobs:
                   contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                   horizontalArrangement = Arrangement.spacedBy(8.dp)
               ) {
+                  if (vm.googleSignedIn) {
+                      item { ChipItem("Đăng ký", vm.subsMode) { vm.openSubscriptions() } }
+                  }
                   itemsIndexed(vm.chips) { i, chip ->
-                      val selected = vm.selectedChip == i
-                      val colors = MaterialTheme.colorScheme
+                      ChipItem(chip.first, !vm.subsMode && vm.selectedChip == i) { vm.selectChip(i) }
+                  }
+              }
+          }
+
+          @Composable
+          private fun ChipItem(label: String, selected: Boolean, onClick: () -> Unit) {
+              val colors = MaterialTheme.colorScheme
+              Text(
+                  label,
+                  color = if (selected) colors.background else colors.onBackground,
+                  fontSize = 14.sp,
+                  fontWeight = FontWeight.Medium,
+                  modifier = Modifier
+                      .clip(RoundedCornerShape(8.dp))
+                      .background(if (selected) colors.onBackground else colors.surfaceVariant)
+                      .clickable(onClick = onClick)
+                      .padding(horizontal = 12.dp, vertical = 7.dp)
+              )
+          }
+
+          @Composable
+          private fun SubsFeed(vm: MainViewModel) {
+              Box(Modifier.fillMaxSize()) {
+                  LazyColumn(modifier = Modifier.fillMaxSize()) {
+                      items(vm.subsFeed) { v ->
+                          FeedCard(v) { vm.play(v.url, v.title) }
+                      }
+                  }
+                  if (vm.subsLoading) {
+                      CircularProgressIndicator(Modifier.align(Alignment.Center))
+                  }
+                  vm.subsError?.let { msg ->
+                      ErrorBox(msg) { vm.openSubscriptions() }
+                  }
+                  if (!vm.subsLoading && vm.subsError == null && vm.subsFeed.isEmpty()) {
                       Text(
-                          chip.first,
-                          color = if (selected) colors.background else colors.onBackground,
-                          fontSize = 14.sp,
-                          fontWeight = FontWeight.Medium,
+                          "Chưa có video mới từ các kênh bạn đã đăng ký",
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
                           modifier = Modifier
-                              .clip(RoundedCornerShape(8.dp))
-                              .background(if (selected) colors.onBackground else colors.surfaceVariant)
-                              .clickable { vm.selectChip(i) }
-                              .padding(horizontal = 12.dp, vertical = 7.dp)
+                              .align(Alignment.Center)
+                              .padding(24.dp)
                       )
                   }
               }
@@ -771,14 +987,17 @@ jobs:
           import androidx.core.content.ContextCompat
           import androidx.core.text.HtmlCompat
           import androidx.lifecycle.AndroidViewModel
+          import androidx.lifecycle.viewModelScope
           import androidx.media3.common.PlaybackException
           import androidx.media3.common.Player
           import androidx.media3.session.MediaController
           import androidx.media3.session.SessionToken
-          import androidx.lifecycle.viewModelScope
           import kotlinx.coroutines.CancellationException
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.Job
+          import kotlinx.coroutines.async
+          import kotlinx.coroutines.awaitAll
+          import kotlinx.coroutines.coroutineScope
           import kotlinx.coroutines.delay
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
@@ -789,16 +1008,25 @@ jobs:
           import org.schabi.newpipe.extractor.localization.ContentCountry
           import org.schabi.newpipe.extractor.localization.Localization
           import org.schabi.newpipe.extractor.search.SearchInfo
+          import org.schabi.newpipe.extractor.stream.AudioStream
           import org.schabi.newpipe.extractor.stream.Description
           import org.schabi.newpipe.extractor.stream.StreamInfo
           import org.schabi.newpipe.extractor.stream.StreamInfoItem
+          import org.schabi.newpipe.extractor.stream.VideoStream
 
-          data class Quality(val label: String, val url: String)
+          /** audioUrl != null nghĩa là luồng hình và tiếng tách riêng (1080p trở lên), cần ghép khi phát. */
+          data class Quality(
+              val label: String,
+              val url: String,
+              val audioUrl: String? = null,
+              val height: Int = 0
+          )
 
           data class WatchState(
               val pageUrl: String,
               val title: String,
               val uploader: String,
+              val channelId: String?,
               val avatar: String?,
               val subscribers: Long,
               val views: Long,
@@ -814,14 +1042,32 @@ jobs:
           class MainViewModel(app: Application) : AndroidViewModel(app) {
               private val youtube = ServiceList.YouTube
               private val store = UserStore(app)
+              private val googleAuth = GoogleAuth(app)
+              private val api = YouTubeApi(googleAuth)
 
-              // ---- Tài khoản cục bộ ----
+              // ---- Tài khoản cục bộ (lịch sử trên máy) ----
               var showProfile by mutableStateOf(false)
               var userKey by mutableStateOf<String?>(store.currentUser())
               var userName by mutableStateOf(store.currentUser()?.let { store.displayName(it) } ?: "")
               var loginError by mutableStateOf<String?>(null)
               var history by mutableStateOf<List<HistoryEntry>>(emptyList())
               var searchHistory by mutableStateOf<List<String>>(emptyList())
+
+              // ---- Kết nối YouTube (đăng ký kênh) ----
+              var googleConfigured by mutableStateOf(googleAuth.isConfigured)
+              var googleSignedIn by mutableStateOf(googleAuth.isSignedIn)
+              var googleChannelName by mutableStateOf("")
+              var googleBusy by mutableStateOf(false)
+              var googleError by mutableStateOf<String?>(null)
+              var deviceCode by mutableStateOf<GoogleAuth.DeviceCode?>(null)
+              var subscriptions by mutableStateOf<List<Channel>>(emptyList())
+              var subBusy by mutableStateOf(false)
+              var subMessage by mutableStateOf<String?>(null)
+              var subsMode by mutableStateOf(false)
+              var subsFeed by mutableStateOf<List<FeedVideo>>(emptyList())
+              var subsLoading by mutableStateOf(false)
+              var subsError by mutableStateOf<String?>(null)
+              private var loginJob: Job? = null
 
               // ---- Trang chủ / tìm kiếm ----
               val chips = listOf(
@@ -865,6 +1111,7 @@ jobs:
               private var watchJob: Job? = null
 
               // ---- Trình phát (nằm trong PlaybackService) ----
+              var controller by mutableStateOf<MediaController?>(null)
               var player by mutableStateOf<Player?>(null)
               var inPip by mutableStateOf(false)
               private var releaseController: (() -> Unit)? = null
@@ -874,9 +1121,49 @@ jobs:
                   loadFeed(currentQuery)
                   connectPlayer()
                   reloadUserData()
+                  if (googleSignedIn) refreshSubscriptions()
               }
 
-              // ================= Tài khoản =================
+              private fun connectPlayer() {
+                  val ctx = getApplication<Application>()
+                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+                  val future = MediaController.Builder(ctx, token).buildAsync()
+                  future.addListener({
+                      try {
+                          val c = future.get()
+                          c.addListener(object : Player.Listener {
+                              override fun onPlayerError(error: PlaybackException) {
+                                  playerError =
+                                      "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
+                              }
+
+                              override fun onPlaybackStateChanged(playbackState: Int) {
+                                  if (playbackState == Player.STATE_READY) playerError = null
+                              }
+                          })
+                          controller = c
+                          player = c
+                      } catch (e: Exception) {
+                          playerError = "Không kết nối được trình phát nền"
+                      }
+                  }, ContextCompat.getMainExecutor(ctx))
+                  releaseController = { MediaController.releaseFuture(future) }
+              }
+
+              fun stopPlayback() {
+                  player?.run {
+                      stop()
+                      clearMediaItems()
+                  }
+                  closeWatch()
+              }
+
+              override fun onCleared() {
+                  releaseController?.invoke()
+                  super.onCleared()
+              }
+
+              // ================= Tài khoản cục bộ =================
               private fun reloadUserData() {
                   val u = userKey
                   history = if (u == null) emptyList() else store.history(u)
@@ -920,42 +1207,158 @@ jobs:
                   history = store.history(u)
               }
 
-              private fun connectPlayer() {
-                  val ctx = getApplication<Application>()
-                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-                  val future = MediaController.Builder(ctx, token).buildAsync()
-                  future.addListener({
+              // ================= Kết nối YouTube =================
+              fun googleClientId(): String = googleAuth.clientId
+              fun googleClientSecret(): String = googleAuth.clientSecret
+
+              fun saveGoogleConfig(clientId: String, secret: String) {
+                  googleAuth.clientId = clientId
+                  googleAuth.clientSecret = secret
+                  googleConfigured = googleAuth.isConfigured
+                  googleError = null
+              }
+
+              fun startGoogleLogin() {
+                  loginJob?.cancel()
+                  loginJob = viewModelScope.launch {
+                      googleError = null
+                      googleBusy = true
                       try {
-                          val controller = future.get()
-                          controller.addListener(object : Player.Listener {
-                              override fun onPlayerError(error: PlaybackException) {
-                                  playerError =
-                                      "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
-                              }
-
-                              override fun onPlaybackStateChanged(playbackState: Int) {
-                                  if (playbackState == Player.STATE_READY) playerError = null
-                              }
-                          })
-                          player = controller
+                          val code = withContext(Dispatchers.IO) { googleAuth.requestDeviceCode() }
+                          deviceCode = code
+                          val deadline = System.currentTimeMillis() + code.expiresIn * 1000L
+                          var ok = false
+                          while (!ok && System.currentTimeMillis() < deadline) {
+                              delay(code.interval * 1000L)
+                              ok = withContext(Dispatchers.IO) { googleAuth.pollToken(code) }
+                          }
+                          if (ok) {
+                              googleSignedIn = true
+                              refreshSubscriptions()
+                          } else {
+                              googleError = "Mã đã hết hạn, hãy thử lại"
+                          }
+                      } catch (e: CancellationException) {
+                          throw e
                       } catch (e: Exception) {
-                          playerError = "Không kết nối được trình phát nền"
+                          googleError = e.message ?: "Lỗi đăng nhập Google"
                       }
-                  }, ContextCompat.getMainExecutor(ctx))
-                  releaseController = { MediaController.releaseFuture(future) }
-              }
-
-              fun stopPlayback() {
-                  player?.run {
-                      stop()
-                      clearMediaItems()
+                      deviceCode = null
+                      googleBusy = false
                   }
-                  closeWatch()
               }
 
-              override fun onCleared() {
-                  releaseController?.invoke()
-                  super.onCleared()
+              fun cancelGoogleLogin() {
+                  loginJob?.cancel()
+                  deviceCode = null
+                  googleBusy = false
+              }
+
+              fun signOutGoogle() {
+                  googleAuth.signOut()
+                  googleSignedIn = false
+                  googleChannelName = ""
+                  subscriptions = emptyList()
+                  subsFeed = emptyList()
+                  subsMode = false
+              }
+
+              fun refreshSubscriptions() {
+                  if (!googleSignedIn) return
+                  viewModelScope.launch {
+                      googleBusy = true
+                      googleError = null
+                      try {
+                          subscriptions = withContext(Dispatchers.IO) { api.subscriptions() }
+                          googleChannelName = withContext(Dispatchers.IO) {
+                              try {
+                                  api.myChannelName()
+                              } catch (e: Exception) {
+                                  ""
+                              }
+                          }
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          googleError = e.message
+                          googleSignedIn = googleAuth.isSignedIn
+                      }
+                      googleBusy = false
+                  }
+              }
+
+              fun isSubscribed(channelId: String): Boolean = subscriptions.any { it.id == channelId }
+
+              fun toggleSubscribe(channelId: String) {
+                  if (!googleSignedIn) {
+                      subMessage = "Hãy kết nối tài khoản YouTube trong mục Tài khoản để đăng ký kênh"
+                      return
+                  }
+                  viewModelScope.launch {
+                      subBusy = true
+                      subMessage = null
+                      try {
+                          val existing = subscriptions.firstOrNull { it.id == channelId }
+                          if (existing != null) {
+                              withContext(Dispatchers.IO) { api.unsubscribe(existing.subId) }
+                              subscriptions = subscriptions.filter { it.id != channelId }
+                          } else {
+                              val c = withContext(Dispatchers.IO) { api.subscribe(channelId) }
+                              subscriptions = subscriptions + c
+                          }
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          subMessage = e.message ?: "Không thực hiện được"
+                      }
+                      subBusy = false
+                  }
+              }
+
+              fun unsubscribe(channel: Channel) {
+                  viewModelScope.launch {
+                      try {
+                          withContext(Dispatchers.IO) { api.unsubscribe(channel.subId) }
+                          subscriptions = subscriptions.filter { it.id != channel.id }
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          googleError = e.message
+                      }
+                  }
+              }
+
+              fun openSubscriptions() {
+                  subsMode = true
+                  selectedChip = -1
+                  viewModelScope.launch {
+                      subsLoading = true
+                      subsError = null
+                      try {
+                          var channels = subscriptions
+                          if (channels.isEmpty()) {
+                              channels = withContext(Dispatchers.IO) { api.subscriptions() }
+                              subscriptions = channels
+                          }
+                          val feeds = coroutineScope {
+                              channels.take(60).map { ch ->
+                                  async(Dispatchers.IO) {
+                                      try {
+                                          api.channelFeed(ch.id)
+                                      } catch (e: Exception) {
+                                          emptyList<FeedVideo>()
+                                      }
+                                  }
+                              }.awaitAll()
+                          }
+                          subsFeed = feeds.flatten().sortedByDescending { it.published }.take(150)
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          subsError = e.message ?: "Không tải được video từ kênh đã đăng ký"
+                      }
+                      subsLoading = false
+                  }
               }
 
               // ================= Feed =================
@@ -1002,6 +1405,7 @@ jobs:
               }
 
               fun selectChip(i: Int) {
+                  subsMode = false
                   selectedChip = i
                   currentQuery = chips[i].second
                   loadFeed(currentQuery)
@@ -1034,6 +1438,7 @@ jobs:
                   if (q.isBlank()) return
                   searchText = q
                   searching = false
+                  subsMode = false
                   suggestions = emptyList()
                   selectedChip = -1
                   currentQuery = q
@@ -1051,6 +1456,7 @@ jobs:
                   watchLoading = true
                   watchError = null
                   playerError = null
+                  subMessage = null
                   watchTitleHint = titleHint
                   watch = null
                   selectedQuality = 0
@@ -1058,6 +1464,8 @@ jobs:
                       try {
                           val loaded = withContext(Dispatchers.IO) { loadWatch(url) }
                           watch = loaded
+                          // Mặc định chọn chất lượng cao nhất không vượt quá 1080p
+                          selectedQuality = loaded.qualities.indexOfFirst { it.height in 1..1080 }.coerceAtLeast(0)
                           recordHistory(loaded)
                       } catch (e: CancellationException) {
                           throw e
@@ -1081,16 +1489,68 @@ jobs:
                   playerError = null
               }
 
+              /** Hình tách riêng (tới 4K) + tiếng tốt nhất, thêm các luồng gộp sẵn nếu chưa có độ phân giải đó. */
+              private fun buildQualities(info: StreamInfo): List<Quality> {
+                  val audios = info.audioStreams
+
+                  fun pickAudio(preferM4a: Boolean): AudioStream? {
+                      val pool = audios.filter { (it.format?.suffix == "m4a") == preferM4a }.ifEmpty { audios }
+                      return pool.maxByOrNull { it.averageBitrate }
+                  }
+
+                  // Số nhỏ = ưu tiên hơn. Từ 1080p trở xuống ưu tiên H.264, trên 1080p ưu tiên VP9.
+                  fun rank(v: VideoStream): Int {
+                      val c = v.codec ?: ""
+                      val high = v.height > 1080
+                      return when {
+                          c.startsWith("avc1") -> if (high) 2 else 0
+                          c.startsWith("vp09") || c.startsWith("vp9") -> if (high) 0 else 1
+                          c.startsWith("av01") -> if (high) 1 else 2
+                          else -> 3
+                      }
+                  }
+
+                  val out = ArrayList<Quality>()
+                  val groups = info.videoOnlyStreams.groupBy { it.height to it.fps }
+                  val keys = groups.keys.sortedWith(
+                      compareByDescending<Pair<Int, Int>> { it.first }.thenByDescending { it.second }
+                  )
+                  for (key in keys) {
+                      val h = key.first
+                      val fps = key.second
+                      val best = groups.getValue(key)
+                          .sortedWith(compareBy<VideoStream>({ rank(it) }, { -it.bitrate }))
+                          .first()
+                      val audio = pickAudio(best.format?.suffix == "mp4") ?: continue
+                      val tag = when {
+                          h >= 2160 -> " (4K)"
+                          h >= 1440 -> " (2K)"
+                          h >= 1080 -> " (Full HD)"
+                          h >= 720 -> " (HD)"
+                          else -> ""
+                      }
+                      val label = "${h}p" + (if (fps > 30) "$fps" else "") + tag
+                      out.add(Quality(label, best.content, audio.content, h))
+                  }
+
+                  val adaptiveHeights = out.map { it.height }.toSet()
+                  info.videoStreams
+                      .sortedByDescending { it.height }
+                      .distinctBy { it.height }
+                      .forEach { v ->
+                          if (v.height !in adaptiveHeights) {
+                              out.add(Quality("${v.height}p", v.content, null, v.height))
+                          }
+                      }
+                  return out.sortedByDescending { it.height }
+              }
+
               private fun loadWatch(url: String): WatchState {
                   val info = StreamInfo.getInfo(youtube, url)
 
-                  // videoStreams = luồng đã gộp sẵn hình + tiếng
-                  var qualities = info.videoStreams
-                      .sortedByDescending { it.height }
-                      .distinctBy { it.height }
-                      .map { Quality(if (it.resolution.isNullOrBlank()) "${it.height}p" else it.resolution, it.content) }
+                  var qualities = buildQualities(info)
                   if (qualities.isEmpty() && !info.hlsUrl.isNullOrBlank()) {
-                      qualities = listOf(Quality("Tự động", info.hlsUrl))
+                      qualities = listOf(Quality("Tự động", info.hlsUrl, null, 0))
                   }
                   if (qualities.isEmpty()) {
                       throw IllegalStateException("Không tìm thấy luồng phát cho video này")
@@ -1108,6 +1568,7 @@ jobs:
                       pageUrl = url,
                       title = info.name,
                       uploader = info.uploaderName ?: "",
+                      channelId = info.uploaderUrl?.substringAfterLast('/')?.takeIf { it.startsWith("UC") },
                       avatar = info.uploaderAvatars.lastOrNull()?.url,
                       subscribers = info.uploaderSubscriberCount,
                       views = info.viewCount,
@@ -1127,14 +1588,24 @@ jobs:
           package com.example.adfreetube
 
           import android.content.Intent
+          import android.os.Bundle
           import androidx.media3.common.AudioAttributes
           import androidx.media3.common.C
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.MediaMetadata
+          import androidx.media3.datasource.DataSource
           import androidx.media3.datasource.DefaultHttpDataSource
           import androidx.media3.datasource.ResolvingDataSource
           import androidx.media3.exoplayer.ExoPlayer
           import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+          import androidx.media3.exoplayer.source.MergingMediaSource
+          import androidx.media3.exoplayer.source.ProgressiveMediaSource
           import androidx.media3.session.MediaSession
           import androidx.media3.session.MediaSessionService
+          import androidx.media3.session.SessionCommand
+          import androidx.media3.session.SessionResult
+          import com.google.common.util.concurrent.Futures
+          import com.google.common.util.concurrent.ListenableFuture
 
           /**
            * Trình phát chạy trong một dịch vụ nền (foreground service) nên tắt màn hình
@@ -1142,24 +1613,83 @@ jobs:
            */
           class PlaybackService : MediaSessionService() {
               private var session: MediaSession? = null
+              private var exo: ExoPlayer? = null
+              private var dataSource: DataSource.Factory? = null
 
               override fun onCreate() {
                   super.onCreate()
 
                   // Mỗi link stream cần đúng User-Agent của "client" YouTube tạo ra nó
                   val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
-                  val dataSource = ResolvingDataSource.Factory(http) { spec ->
+                  val ds = ResolvingDataSource.Factory(http) { spec ->
                       spec.withAdditionalHeaders(mapOf("User-Agent" to userAgentFor(spec.uri.toString())))
                   }
+                  dataSource = ds
 
                   val player = ExoPlayer.Builder(this)
-                      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+                      .setMediaSourceFactory(DefaultMediaSourceFactory(ds))
                       .setAudioAttributes(AudioAttributes.DEFAULT, true)
                       .setHandleAudioBecomingNoisy(true)
                       .setWakeMode(C.WAKE_MODE_NETWORK)
                       .build()
+                  exo = player
 
-                  session = MediaSession.Builder(this, player).build()
+                  session = MediaSession.Builder(this, player)
+                      .setCallback(object : MediaSession.Callback {
+                          override fun onConnect(
+                              session: MediaSession,
+                              controller: MediaSession.ControllerInfo
+                          ): MediaSession.ConnectionResult {
+                              val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                                  .buildUpon()
+                                  .add(SessionCommand(CMD_PLAY_MERGED, Bundle.EMPTY))
+                                  .build()
+                              return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                                  .setAvailableSessionCommands(commands)
+                                  .build()
+                          }
+
+                          override fun onCustomCommand(
+                              session: MediaSession,
+                              controller: MediaSession.ControllerInfo,
+                              customCommand: SessionCommand,
+                              args: Bundle
+                          ): ListenableFuture<SessionResult> {
+                              if (customCommand.customAction == CMD_PLAY_MERGED) {
+                                  playMerged(args)
+                                  return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                              }
+                              return super.onCustomCommand(session, controller, customCommand, args)
+                          }
+                      })
+                      .build()
+              }
+
+              /** Ghép luồng hình (không tiếng) và luồng tiếng riêng để phát được 1080p / 1440p / 4K. */
+              private fun playMerged(args: Bundle) {
+                  val player = exo ?: return
+                  val ds = dataSource ?: return
+                  val video = args.getString("video") ?: return
+                  val audio = args.getString("audio") ?: return
+                  val pos = args.getLong("pos", 0L)
+
+                  val videoItem = MediaItem.Builder()
+                      .setUri(video)
+                      .setMediaMetadata(
+                          MediaMetadata.Builder()
+                              .setTitle(args.getString("title"))
+                              .setArtist(args.getString("artist"))
+                              .build()
+                      )
+                      .build()
+                  val factory = ProgressiveMediaSource.Factory(ds)
+                  val merged = MergingMediaSource(
+                      factory.createMediaSource(videoItem),
+                      factory.createMediaSource(MediaItem.fromUri(audio))
+                  )
+                  player.setMediaSource(merged, pos)
+                  player.prepare()
+                  player.play()
               }
 
               override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -1176,7 +1706,12 @@ jobs:
                       release()
                   }
                   session = null
+                  exo = null
                   super.onDestroy()
+              }
+
+              companion object {
+                  const val CMD_PLAY_MERGED = "com.example.adfreetube.PLAY_MERGED"
               }
           }
           EOF
@@ -1184,6 +1719,8 @@ jobs:
           cat > app/src/main/java/com/example/adfreetube/Profile.kt <<'EOF'
           package com.example.adfreetube
 
+          import android.content.Intent
+          import android.net.Uri
           import androidx.compose.foundation.background
           import androidx.compose.foundation.clickable
           import androidx.compose.foundation.layout.Arrangement
@@ -1207,6 +1744,7 @@ jobs:
           import androidx.compose.material.icons.automirrored.filled.ArrowBack
           import androidx.compose.material.icons.filled.Search
           import androidx.compose.material3.Button
+          import androidx.compose.material3.CircularProgressIndicator
           import androidx.compose.material3.Icon
           import androidx.compose.material3.IconButton
           import androidx.compose.material3.MaterialTheme
@@ -1224,6 +1762,9 @@ jobs:
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.platform.LocalClipboardManager
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.AnnotatedString
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.input.ImeAction
           import androidx.compose.ui.text.input.KeyboardType
@@ -1235,6 +1776,10 @@ jobs:
 
           @Composable
           fun ProfileScreen(vm: MainViewModel) {
+              val sortedSubs = remember(vm.subscriptions) {
+                  vm.subscriptions.sortedBy { it.title.lowercase() }
+              }
+
               Column(Modifier.fillMaxSize()) {
                   Row(
                       Modifier
@@ -1248,7 +1793,75 @@ jobs:
                       }
                       Text("Tài khoản", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                   }
-                  if (vm.userKey == null) LoginForm(vm) else ProfileContent(vm)
+
+                  LazyColumn(Modifier.fillMaxSize()) {
+                      // ---- Tài khoản trên máy (lịch sử) ----
+                      if (vm.userKey == null) {
+                          item { LoginForm(vm) }
+                      } else {
+                          item { AccountHeader(vm) }
+                      }
+
+                      // ---- Kết nối YouTube ----
+                      item { GoogleSection(vm) }
+                      if (vm.googleSignedIn) {
+                          item {
+                              SectionHeader(
+                                  "Kênh đã đăng ký (${vm.subscriptions.size})",
+                                  "Làm mới"
+                              ) { vm.refreshSubscriptions() }
+                          }
+                          items(sortedSubs) { c -> ChannelRow(vm, c) }
+                      }
+
+                      // ---- Lịch sử ----
+                      if (vm.userKey != null) {
+                          item {
+                              SectionHeader(
+                                  "Lịch sử tìm kiếm",
+                                  if (vm.searchHistory.isEmpty()) null else "Xóa"
+                              ) { vm.clearSearchHistory() }
+                          }
+                          if (vm.searchHistory.isEmpty()) {
+                              item { EmptyNote("Chưa có tìm kiếm nào") }
+                          } else {
+                              items(vm.searchHistory) { q ->
+                                  Row(
+                                      Modifier
+                                          .fillMaxWidth()
+                                          .clickable {
+                                              vm.showProfile = false
+                                              vm.submitSearch(q)
+                                          }
+                                          .padding(horizontal = 16.dp, vertical = 12.dp),
+                                      verticalAlignment = Alignment.CenterVertically
+                                  ) {
+                                      Icon(
+                                          Icons.Filled.Search, null,
+                                          Modifier.size(20.dp),
+                                          tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                      )
+                                      Spacer(Modifier.width(16.dp))
+                                      Text(q, fontSize = 15.sp)
+                                  }
+                              }
+                          }
+
+                          item {
+                              SectionHeader(
+                                  "Lịch sử xem",
+                                  if (vm.history.isEmpty()) null else "Xóa tất cả"
+                              ) { vm.clearHistory() }
+                          }
+                          if (vm.history.isEmpty()) {
+                              item { EmptyNote("Chưa xem video nào") }
+                          } else {
+                              items(vm.history) { e ->
+                                  HistoryRow(e) { vm.play(e.url, e.title) }
+                              }
+                          }
+                      }
+                  }
               }
           }
 
@@ -1263,9 +1876,10 @@ jobs:
                       .padding(16.dp),
                   verticalArrangement = Arrangement.spacedBy(12.dp)
               ) {
+                  Text("Tài khoản trên máy", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                   Text(
-                      "Đăng nhập để lưu lịch sử xem và lịch sử tìm kiếm của bạn.",
-                      fontSize = 15.sp
+                      "Đăng nhập để lưu lịch sử xem và lịch sử tìm kiếm của bạn trong app.",
+                      fontSize = 14.sp
                   )
                   OutlinedTextField(
                       value = name,
@@ -1294,7 +1908,7 @@ jobs:
                       Text("Đăng nhập / Tạo tài khoản")
                   }
                   Text(
-                      "Tên chưa có sẽ tự tạo tài khoản mới. Tài khoản và lịch sử được lưu ngay trên điện thoại này, không gửi đi đâu cả.",
+                      "Tên chưa có sẽ tự tạo tài khoản mới. Dữ liệu lưu ngay trên điện thoại này.",
                       fontSize = 12.sp,
                       color = MaterialTheme.colorScheme.onSurfaceVariant
                   )
@@ -1302,73 +1916,154 @@ jobs:
           }
 
           @Composable
-          private fun ProfileContent(vm: MainViewModel) {
-              LazyColumn(Modifier.fillMaxSize()) {
-                  item {
-                      Row(
-                          Modifier
-                              .fillMaxWidth()
-                              .padding(16.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          InitialBadge(vm.userName, 56.dp)
-                          Spacer(Modifier.width(16.dp))
-                          Column(Modifier.weight(1f)) {
-                              Text(vm.userName, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                              Text(
-                                  "Đã đăng nhập",
-                                  fontSize = 12.sp,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
+          private fun AccountHeader(vm: MainViewModel) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(16.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  InitialBadge(vm.userName, 56.dp)
+                  Spacer(Modifier.width(16.dp))
+                  Column(Modifier.weight(1f)) {
+                      Text(vm.userName, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                      Text(
+                          "Tài khoản trên máy",
+                          fontSize = 12.sp,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                  }
+                  OutlinedButton(onClick = { vm.logout() }) { Text("Đăng xuất") }
+              }
+          }
+
+          @Composable
+          private fun GoogleSection(vm: MainViewModel) {
+              val ctx = LocalContext.current
+              val clipboard = LocalClipboardManager.current
+              var clientId by remember { mutableStateOf(vm.googleClientId()) }
+              var secret by remember { mutableStateOf(vm.googleClientSecret()) }
+              var editing by remember { mutableStateOf(false) }
+              val dim = MaterialTheme.colorScheme.onSurfaceVariant
+              val code = vm.deviceCode
+
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                  Text("Kết nối tài khoản YouTube", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+
+                  when {
+                      vm.googleSignedIn -> {
+                          Text(
+                              "Đã kết nối" +
+                                  (if (vm.googleChannelName.isNotBlank()) ": ${vm.googleChannelName}" else ""),
+                              fontSize = 14.sp
+                          )
+                          Text(
+                              "Bạn có thể đăng ký / hủy đăng ký kênh ngay trong app, và xem video mới của các kênh đã đăng ký ở mục \"Đăng ký\" trên trang chủ.",
+                              fontSize = 12.sp,
+                              color = dim
+                          )
+                          if (vm.googleBusy) CircularProgressIndicator(Modifier.size(24.dp))
+                          OutlinedButton(onClick = { vm.signOutGoogle() }) { Text("Ngắt kết nối") }
+                      }
+
+                      code != null -> {
+                          Text("1. Mở trang đăng nhập của Google:", fontSize = 14.sp)
+                          Button(onClick = {
+                              ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(code.url)))
+                          }) { Text("Mở " + code.url) }
+                          Text("2. Nhập mã này (đúng như hiển thị):", fontSize = 14.sp)
+                          Text(
+                              code.userCode,
+                              fontSize = 28.sp,
+                              fontWeight = FontWeight.Bold,
+                              letterSpacing = 2.sp
+                          )
+                          OutlinedButton(onClick = { clipboard.setText(AnnotatedString(code.userCode)) }) {
+                              Text("Sao chép mã")
                           }
-                          OutlinedButton(onClick = { vm.logout() }) { Text("Đăng xuất") }
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                              Spacer(Modifier.width(10.dp))
+                              Text("Đang chờ bạn xác nhận trên Google…", fontSize = 12.sp, color = dim)
+                          }
+                          TextButton(onClick = { vm.cancelGoogleLogin() }) { Text("Hủy") }
+                      }
+
+                      !vm.googleConfigured || editing -> {
+                          Text(
+                              "Cần có Client ID và Client secret do bạn tự tạo trong Google Cloud Console (miễn phí, làm một lần):\n" +
+                                  "1. Vào console.cloud.google.com, tạo Project mới.\n" +
+                                  "2. Bật \"YouTube Data API v3\" trong APIs & Services > Library.\n" +
+                                  "3. Cấu hình màn hình đồng ý OAuth (External), thêm email của bạn vào Test users, rồi bấm Publish app để mã không hết hạn sau 7 ngày.\n" +
+                                  "4. Credentials > Create credentials > OAuth client ID > loại \"TVs and Limited Input devices\".\n" +
+                                  "5. Dán Client ID và Client secret vào hai ô bên dưới.",
+                              fontSize = 12.sp,
+                              color = dim
+                          )
+                          OutlinedTextField(
+                              value = clientId,
+                              onValueChange = { clientId = it },
+                              label = { Text("Client ID") },
+                              singleLine = true,
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          OutlinedTextField(
+                              value = secret,
+                              onValueChange = { secret = it },
+                              label = { Text("Client secret") },
+                              singleLine = true,
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Button(
+                              onClick = {
+                                  vm.saveGoogleConfig(clientId, secret)
+                                  editing = false
+                              },
+                              enabled = clientId.isNotBlank() && secret.isNotBlank()
+                          ) { Text("Lưu") }
+                      }
+
+                      else -> {
+                          Text(
+                              "Đăng nhập Google để đăng ký kênh và xem video mới của các kênh đã đăng ký.",
+                              fontSize = 14.sp
+                          )
+                          Button(onClick = { vm.startGoogleLogin() }, enabled = !vm.googleBusy) {
+                              Text("Đăng nhập Google")
+                          }
+                          TextButton(onClick = { editing = true }) { Text("Sửa Client ID / Client secret") }
                       }
                   }
 
-                  item {
-                      SectionHeader(
-                          "Lịch sử tìm kiếm",
-                          if (vm.searchHistory.isEmpty()) null else "Xóa"
-                      ) { vm.clearSearchHistory() }
+                  vm.googleError?.let {
+                      Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                   }
-                  if (vm.searchHistory.isEmpty()) {
-                      item { EmptyNote("Chưa có tìm kiếm nào") }
-                  } else {
-                      items(vm.searchHistory) { q ->
-                          Row(
-                              Modifier
-                                  .fillMaxWidth()
-                                  .clickable {
-                                      vm.showProfile = false
-                                      vm.submitSearch(q)
-                                  }
-                                  .padding(horizontal = 16.dp, vertical = 12.dp),
-                              verticalAlignment = Alignment.CenterVertically
-                          ) {
-                              Icon(
-                                  Icons.Filled.Search, null,
-                                  Modifier.size(20.dp),
-                                  tint = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                              Spacer(Modifier.width(16.dp))
-                              Text(q, fontSize = 15.sp)
-                          }
-                      }
-                  }
+              }
+          }
 
-                  item {
-                      SectionHeader(
-                          "Lịch sử xem",
-                          if (vm.history.isEmpty()) null else "Xóa tất cả"
-                      ) { vm.clearHistory() }
-                  }
-                  if (vm.history.isEmpty()) {
-                      item { EmptyNote("Chưa xem video nào") }
-                  } else {
-                      items(vm.history) { e ->
-                          HistoryRow(e) { vm.play(e.url, e.title) }
-                      }
-                  }
+          @Composable
+          private fun ChannelRow(vm: MainViewModel, c: Channel) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 16.dp, vertical = 6.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Avatar(c.thumb, 40.dp)
+                  Spacer(Modifier.width(12.dp))
+                  Text(
+                      c.title,
+                      fontSize = 15.sp,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f)
+                  )
+                  TextButton(onClick = { vm.unsubscribe(c) }) { Text("Hủy đăng ký") }
               }
           }
 
@@ -1633,6 +2328,7 @@ jobs:
           package com.example.adfreetube
 
           import android.content.Intent
+          import android.os.Bundle
           import androidx.compose.foundation.background
           import androidx.compose.foundation.clickable
           import androidx.compose.foundation.horizontalScroll
@@ -1655,10 +2351,13 @@ jobs:
           import androidx.compose.material.icons.filled.Settings
           import androidx.compose.material.icons.filled.Share
           import androidx.compose.material.icons.filled.ThumbUp
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ButtonDefaults
           import androidx.compose.material3.CircularProgressIndicator
           import androidx.compose.material3.DropdownMenu
           import androidx.compose.material3.DropdownMenuItem
           import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
           import androidx.compose.material3.Text
           import androidx.compose.runtime.Composable
           import androidx.compose.runtime.DisposableEffect
@@ -1672,21 +2371,14 @@ jobs:
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.platform.LocalLifecycleOwner
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.style.TextOverflow
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
           import androidx.compose.ui.viewinterop.AndroidView
-          import androidx.lifecycle.Lifecycle
-          import androidx.lifecycle.LifecycleEventObserver
           import androidx.media3.common.MediaItem
           import androidx.media3.common.MediaMetadata
-          import androidx.media3.common.PlaybackException
-          import androidx.media3.common.Player
-          import androidx.media3.datasource.DefaultHttpDataSource
-          import androidx.media3.exoplayer.ExoPlayer
-          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+          import androidx.media3.session.SessionCommand
           import androidx.media3.ui.PlayerView
 
           @Composable
@@ -1694,6 +2386,7 @@ jobs:
               val w = vm.watch
               val quality = w?.qualities?.getOrNull(vm.selectedQuality)
               val player = vm.player
+              val ctl = vm.controller
               val big = vm.fullscreen || vm.inPip
 
               // Gỡ PlayerView khỏi trình phát khi rời màn hình (trình phát vẫn sống trong dịch vụ nền)
@@ -1702,23 +2395,35 @@ jobs:
 
               // Nạp video mới / đổi chất lượng (giữ nguyên vị trí đang xem khi chỉ đổi chất lượng)
               var lastPage by remember { mutableStateOf<String?>(null) }
-              LaunchedEffect(w?.pageUrl, quality?.url, player) {
-                  if (w == null || quality == null || player == null) return@LaunchedEffect
-                  val pos = if (lastPage == w.pageUrl) player.currentPosition else 0L
+              LaunchedEffect(w?.pageUrl, quality?.url, quality?.audioUrl, ctl) {
+                  if (w == null || quality == null || ctl == null) return@LaunchedEffect
+                  val pos = if (lastPage == w.pageUrl) ctl.currentPosition else 0L
                   lastPage = w.pageUrl
                   vm.playerError = null
-                  val item = MediaItem.Builder()
-                      .setUri(quality.url)
-                      .setMediaMetadata(
-                          MediaMetadata.Builder()
-                              .setTitle(w.title)
-                              .setArtist(w.uploader)
-                              .build()
-                      )
-                      .build()
-                  player.setMediaItem(item, pos)
-                  player.prepare()
-                  player.play()
+                  if (quality.audioUrl != null) {
+                      // Hình và tiếng tách riêng: nhờ dịch vụ nền ghép lại rồi phát
+                      val args = Bundle().apply {
+                          putString("video", quality.url)
+                          putString("audio", quality.audioUrl)
+                          putString("title", w.title)
+                          putString("artist", w.uploader)
+                          putLong("pos", pos)
+                      }
+                      ctl.sendCustomCommand(SessionCommand(PlaybackService.CMD_PLAY_MERGED, Bundle.EMPTY), args)
+                  } else {
+                      val item = MediaItem.Builder()
+                          .setUri(quality.url)
+                          .setMediaMetadata(
+                              MediaMetadata.Builder()
+                                  .setTitle(w.title)
+                                  .setArtist(w.uploader)
+                                  .build()
+                          )
+                          .build()
+                      ctl.setMediaItem(item, pos)
+                      ctl.prepare()
+                      ctl.play()
+                  }
               }
 
               Column(Modifier.fillMaxSize()) {
@@ -1795,7 +2500,7 @@ jobs:
                       }
                   }
 
-                  // Kênh
+                  // Kênh + nút Đăng ký
                   item {
                       Row(
                           Modifier
@@ -1805,7 +2510,7 @@ jobs:
                       ) {
                           Avatar(w.avatar, 40.dp)
                           Spacer(Modifier.width(12.dp))
-                          Column {
+                          Column(Modifier.weight(1f)) {
                               Text(
                                   w.uploader,
                                   fontWeight = FontWeight.SemiBold,
@@ -1821,6 +2526,34 @@ jobs:
                                   )
                               }
                           }
+                          val channelId = w.channelId
+                          if (channelId != null) {
+                              if (vm.isSubscribed(channelId)) {
+                                  OutlinedButton(
+                                      onClick = { vm.toggleSubscribe(channelId) },
+                                      enabled = !vm.subBusy
+                                  ) { Text("Đã đăng ký") }
+                              } else {
+                                  Button(
+                                      onClick = { vm.toggleSubscribe(channelId) },
+                                      enabled = !vm.subBusy,
+                                      colors = ButtonDefaults.buttonColors(
+                                          containerColor = Color(0xFFCC0000),
+                                          contentColor = Color.White
+                                      )
+                                  ) { Text("Đăng ký") }
+                              }
+                          }
+                      }
+                  }
+                  vm.subMessage?.let { msg ->
+                      item {
+                          Text(
+                              msg,
+                              color = MaterialTheme.colorScheme.error,
+                              fontSize = 12.sp,
+                              modifier = Modifier.padding(horizontal = 12.dp)
+                          )
                       }
                   }
 
@@ -1830,7 +2563,7 @@ jobs:
                       Row(
                           Modifier
                               .horizontalScroll(rememberScrollState())
-                              .padding(horizontal = 12.dp),
+                              .padding(horizontal = 12.dp, vertical = 4.dp),
                           horizontalArrangement = Arrangement.spacedBy(8.dp)
                       ) {
                           if (w.likes >= 0) Pill(formatCount(w.likes), Icons.Filled.ThumbUp)
@@ -1849,7 +2582,13 @@ jobs:
                               DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                   w.qualities.forEachIndexed { i, q ->
                                       DropdownMenuItem(
-                                          text = { Text(q.label) },
+                                          text = {
+                                              Text(
+                                                  q.label,
+                                                  fontWeight = if (i == vm.selectedQuality) FontWeight.Bold
+                                                  else FontWeight.Normal
+                                              )
+                                          },
                                           onClick = {
                                               vm.selectedQuality = i
                                               menu = false
@@ -1896,6 +2635,197 @@ jobs:
                   items(w.related) { item ->
                       VideoCard(item) { vm.play(item.url, item.name) }
                   }
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/YouTubeApi.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.util.Xml
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.json.JSONObject
+          import org.xmlpull.v1.XmlPullParser
+          import java.io.StringReader
+          import java.time.OffsetDateTime
+
+          data class Channel(val id: String, val title: String, val thumb: String?, val subId: String)
+
+          data class FeedVideo(
+              val url: String,
+              val title: String,
+              val author: String,
+              val thumb: String,
+              val published: Long
+          )
+
+          /** YouTube Data API v3 (chính thức): danh sách kênh đăng ký, đăng ký, hủy đăng ký. */
+          class YouTubeApi(private val auth: GoogleAuth) {
+              private val http = OkHttpClient()
+              private val json = "application/json; charset=utf-8".toMediaType()
+              private val base = "https://www.googleapis.com/youtube/v3"
+
+              private fun call(method: String, url: String, body: String? = null): JSONObject {
+                  val token = auth.accessToken()
+                  val requestBody = if (method == "POST") (body ?: "").toRequestBody(json) else null
+                  val req = Request.Builder()
+                      .url(url)
+                      .header("Authorization", "Bearer $token")
+                      .method(method, requestBody)
+                      .build()
+                  http.newCall(req).execute().use { r ->
+                      val text = r.body?.string() ?: ""
+                      if (!r.isSuccessful) throw IllegalStateException(errorMessage(r.code, text))
+                      return if (text.isBlank()) JSONObject() else JSONObject(text)
+                  }
+              }
+
+              private fun errorMessage(code: Int, text: String): String {
+                  val msg = try {
+                      JSONObject(text).optJSONObject("error")?.optString("message")
+                  } catch (e: Exception) {
+                      null
+                  }
+                  return when {
+                      code == 403 && msg?.contains("quota", ignoreCase = true) == true ->
+                          "Hết hạn mức YouTube API hôm nay, hãy thử lại sau"
+                      !msg.isNullOrBlank() -> msg
+                      else -> "Lỗi YouTube API ($code)"
+                  }
+              }
+
+              fun myChannelName(): String {
+                  val j = call("GET", "$base/channels?part=snippet&mine=true")
+                  return j.optJSONArray("items")?.optJSONObject(0)
+                      ?.optJSONObject("snippet")?.optString("title") ?: ""
+              }
+
+              fun subscriptions(): List<Channel> {
+                  val out = ArrayList<Channel>()
+                  var page: String? = null
+                  var n = 0
+                  do {
+                      val url = "$base/subscriptions?part=snippet&mine=true&maxResults=50&order=alphabetical" +
+                          (page?.let { "&pageToken=$it" } ?: "")
+                      val j = call("GET", url)
+                      val items = j.optJSONArray("items")
+                      if (items != null) {
+                          for (i in 0 until items.length()) {
+                              val o = items.getJSONObject(i)
+                              val sn = o.getJSONObject("snippet")
+                              out.add(
+                                  Channel(
+                                      sn.getJSONObject("resourceId").getString("channelId"),
+                                      sn.optString("title"),
+                                      sn.optJSONObject("thumbnails")?.optJSONObject("default")?.optString("url"),
+                                      o.getString("id")
+                                  )
+                              )
+                          }
+                      }
+                      page = j.optString("nextPageToken").ifEmpty { null }
+                      n++
+                  } while (page != null && n < 20)
+                  return out
+              }
+
+              fun subscribe(channelId: String): Channel {
+                  val body = JSONObject().put(
+                      "snippet",
+                      JSONObject().put(
+                          "resourceId",
+                          JSONObject().put("kind", "youtube#channel").put("channelId", channelId)
+                      )
+                  ).toString()
+                  val j = call("POST", "$base/subscriptions?part=snippet", body)
+                  val sn = j.getJSONObject("snippet")
+                  return Channel(
+                      channelId,
+                      sn.optString("title"),
+                      sn.optJSONObject("thumbnails")?.optJSONObject("default")?.optString("url"),
+                      j.getString("id")
+                  )
+              }
+
+              fun unsubscribe(subscriptionId: String) {
+                  call("DELETE", "$base/subscriptions?id=$subscriptionId")
+              }
+
+              /** Video mới của một kênh qua RSS công khai (không tốn hạn mức API). */
+              fun channelFeed(channelId: String): List<FeedVideo> {
+                  val req = Request.Builder()
+                      .url("https://www.youtube.com/feeds/videos.xml?channel_id=$channelId")
+                      .header("User-Agent", DownloaderImpl.USER_AGENT)
+                      .build()
+                  http.newCall(req).execute().use { r ->
+                      if (!r.isSuccessful) return emptyList()
+                      return parseFeed(r.body?.string() ?: "")
+                  }
+              }
+
+              private fun parseFeed(xml: String): List<FeedVideo> {
+                  val parser = Xml.newPullParser()
+                  parser.setInput(StringReader(xml))
+                  val list = ArrayList<FeedVideo>()
+                  var inEntry = false
+                  var tag = ""
+                  var id = ""
+                  var title = ""
+                  var author = ""
+                  var published = 0L
+                  var ev = parser.eventType
+                  while (ev != XmlPullParser.END_DOCUMENT) {
+                      when (ev) {
+                          XmlPullParser.START_TAG -> {
+                              tag = parser.name
+                              if (tag == "entry") {
+                                  inEntry = true
+                                  id = ""
+                                  title = ""
+                                  published = 0L
+                              }
+                          }
+                          XmlPullParser.TEXT -> {
+                              val t = parser.text.trim()
+                              if (t.isNotEmpty()) {
+                                  when (tag) {
+                                      "yt:videoId" -> if (inEntry) id = t
+                                      "title" -> if (inEntry && title.isEmpty()) title = t
+                                      "published" -> if (inEntry) published = parseDate(t)
+                                      "name" -> author = t
+                                  }
+                              }
+                          }
+                          XmlPullParser.END_TAG -> {
+                              if (parser.name == "entry") {
+                                  inEntry = false
+                                  if (id.isNotEmpty()) {
+                                      list.add(
+                                          FeedVideo(
+                                              "https://www.youtube.com/watch?v=$id",
+                                              title,
+                                              author,
+                                              "https://i.ytimg.com/vi/$id/hqdefault.jpg",
+                                              published
+                                          )
+                                      )
+                                  }
+                              }
+                              tag = ""
+                          }
+                      }
+                      ev = parser.next()
+                  }
+                  return list
+              }
+
+              private fun parseDate(s: String): Long = try {
+                  OffsetDateTime.parse(s).toInstant().toEpochMilli()
+              } catch (e: Exception) {
+                  0L
               }
           }
           EOF
