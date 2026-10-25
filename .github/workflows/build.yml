@@ -61,6 +61,7 @@ jobs:
               implementation("androidx.media3:media3-exoplayer:$media3")
               implementation("androidx.media3:media3-exoplayer-hls:$media3")
               implementation("androidx.media3:media3-ui:$media3")
+              implementation("androidx.media3:media3-session:$media3")
 
               implementation(platform("androidx.compose:compose-bom:2024.06.00"))
               implementation("androidx.compose.material3:material3")
@@ -77,20 +78,36 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
               <application
                   android:allowBackup="true"
-                  android:label="AdFreeTube"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      android:supportsPictureInPicture="true"
+                      android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+
+                  <service
+                      android:name=".PlaybackService"
+                      android:exported="true"
+                      android:foregroundServiceType="mediaPlayback">
+                      <intent-filter>
+                          <action android:name="androidx.media3.session.MediaSessionService" />
+                      </intent-filter>
+                  </service>
               </application>
           </manifest>
           EOF
@@ -149,7 +166,25 @@ jobs:
                       Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
                   }
                   Spacer(Modifier.width(6.dp))
-                  Text("AdFreeTube", fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+                  Text("BangNC _ Tube", fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+              }
+          }
+
+          @Composable
+          fun InitialBadge(name: String, size: Dp) {
+              Box(
+                  Modifier
+                      .size(size)
+                      .clip(CircleShape)
+                      .background(Color(0xFFCC0000)),
+                  contentAlignment = Alignment.Center
+              ) {
+                  Text(
+                      name.take(1).uppercase(),
+                      color = Color.White,
+                      fontWeight = FontWeight.Bold,
+                      fontSize = (size.value * 0.5f).sp
+                  )
               }
           }
 
@@ -398,6 +433,7 @@ jobs:
           import androidx.compose.foundation.text.KeyboardOptions
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.automirrored.filled.ArrowBack
+          import androidx.compose.material.icons.filled.AccountCircle
           import androidx.compose.material.icons.filled.Close
           import androidx.compose.material.icons.filled.Search
           import androidx.compose.material3.CircularProgressIndicator
@@ -451,6 +487,13 @@ jobs:
                   Spacer(Modifier.weight(1f))
                   IconButton(onClick = { vm.openSearch() }) {
                       Icon(Icons.Filled.Search, contentDescription = "Tìm kiếm")
+                  }
+                  IconButton(onClick = { vm.showProfile = true }) {
+                      if (vm.userKey != null) {
+                          InitialBadge(vm.userName, 28.dp)
+                      } else {
+                          Icon(Icons.Filled.AccountCircle, contentDescription = "Tài khoản")
+                      }
                   }
               }
           }
@@ -506,7 +549,7 @@ jobs:
           @Composable
           private fun SuggestionList(vm: MainViewModel) {
               LazyColumn(Modifier.fillMaxSize()) {
-                  items(vm.suggestions) { s ->
+                  items(if (vm.searchText.isBlank()) vm.searchHistory else vm.suggestions) { s ->
                       Row(
                           Modifier
                               .fillMaxWidth()
@@ -593,19 +636,29 @@ jobs:
           cat > app/src/main/java/com/example/adfreetube/MainActivity.kt <<'EOF'
           package com.example.adfreetube
 
+          import android.Manifest
+          import android.app.PictureInPictureParams
+          import android.content.Context
           import android.content.pm.ActivityInfo
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
+          import android.os.Build
           import android.os.Bundle
+          import android.os.PowerManager
+          import android.util.Rational
           import androidx.activity.ComponentActivity
           import androidx.activity.compose.BackHandler
           import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
           import androidx.activity.viewModels
+          import androidx.compose.foundation.layout.fillMaxSize
           import androidx.compose.material3.MaterialTheme
           import androidx.compose.material3.Surface
           import androidx.compose.runtime.Composable
           import androidx.compose.runtime.LaunchedEffect
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.core.content.ContextCompat
           import androidx.core.view.WindowCompat
           import androidx.core.view.WindowInsetsCompat
           import androidx.core.view.WindowInsetsControllerCompat
@@ -613,28 +666,75 @@ jobs:
           class MainActivity : ComponentActivity() {
               private val vm: MainViewModel by viewModels()
 
+              private val notificationPermission =
+                  registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   WindowCompat.setDecorFitsSystemWindows(window, true)
+
+                  // Android 13+: cần quyền thông báo để hiện nút điều khiển khi phát nền
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                      != PackageManager.PERMISSION_GRANTED
+                  ) {
+                      notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                  }
+
                   setContent {
                       AdFreeTheme { App(vm) }
+                  }
+              }
+
+              /** Bấm Home / chuyển app khi đang phát -> thu nhỏ thành cửa sổ nổi (Picture-in-Picture). */
+              override fun onUserLeaveHint() {
+                  super.onUserLeaveHint()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                      vm.watching && vm.player?.isPlaying == true
+                  ) {
+                      val params = PictureInPictureParams.Builder()
+                          .setAspectRatio(Rational(16, 9))
+                          .build()
+                      enterPictureInPictureMode(params)
+                  }
+              }
+
+              override fun onPictureInPictureModeChanged(
+                  isInPictureInPictureMode: Boolean,
+                  newConfig: Configuration
+              ) {
+                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+                  vm.inPip = isInPictureInPictureMode
+              }
+
+              /** Đóng cửa sổ nổi (bấm X) -> dừng phát. Tắt màn hình thì vẫn phát tiếp. */
+              override fun onStop() {
+                  super.onStop()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      if (pm.isInteractive) vm.stopPlayback()
                   }
               }
           }
 
           @Composable
           fun App(vm: MainViewModel) {
-              BackHandler(enabled = vm.fullscreen || vm.watching || vm.searching) {
+              BackHandler(enabled = vm.fullscreen || vm.watching || vm.showProfile || vm.searching) {
                   when {
                       vm.fullscreen -> vm.fullscreen = false
                       vm.watching -> vm.closeWatch()
+                      vm.showProfile -> vm.showProfile = false
                       else -> vm.searching = false
                   }
               }
               FullscreenEffect(vm)
 
               Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                  if (vm.watching) WatchScreen(vm) else HomeScreen(vm)
+                  when {
+                      vm.watching -> WatchScreen(vm)
+                      vm.showProfile -> ProfileScreen(vm)
+                      else -> HomeScreen(vm)
+                  }
               }
           }
 
@@ -661,13 +761,20 @@ jobs:
           cat > app/src/main/java/com/example/adfreetube/MainViewModel.kt <<'EOF'
           package com.example.adfreetube
 
+          import android.app.Application
+          import android.content.ComponentName
           import androidx.compose.foundation.lazy.LazyListState
           import androidx.compose.runtime.getValue
           import androidx.compose.runtime.mutableIntStateOf
           import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.setValue
+          import androidx.core.content.ContextCompat
           import androidx.core.text.HtmlCompat
-          import androidx.lifecycle.ViewModel
+          import androidx.lifecycle.AndroidViewModel
+          import androidx.media3.common.PlaybackException
+          import androidx.media3.common.Player
+          import androidx.media3.session.MediaController
+          import androidx.media3.session.SessionToken
           import androidx.lifecycle.viewModelScope
           import kotlinx.coroutines.CancellationException
           import kotlinx.coroutines.Dispatchers
@@ -698,12 +805,23 @@ jobs:
               val likes: Long,
               val date: String,
               val description: String,
+              val thumb: String?,
+              val duration: Long,
               val qualities: List<Quality>,
               val related: List<StreamInfoItem>
           )
 
-          class MainViewModel : ViewModel() {
+          class MainViewModel(app: Application) : AndroidViewModel(app) {
               private val youtube = ServiceList.YouTube
+              private val store = UserStore(app)
+
+              // ---- Tài khoản cục bộ ----
+              var showProfile by mutableStateOf(false)
+              var userKey by mutableStateOf<String?>(store.currentUser())
+              var userName by mutableStateOf(store.currentUser()?.let { store.displayName(it) } ?: "")
+              var loginError by mutableStateOf<String?>(null)
+              var history by mutableStateOf<List<HistoryEntry>>(emptyList())
+              var searchHistory by mutableStateOf<List<String>>(emptyList())
 
               // ---- Trang chủ / tìm kiếm ----
               val chips = listOf(
@@ -746,9 +864,98 @@ jobs:
               var fullscreen by mutableStateOf(false)
               private var watchJob: Job? = null
 
+              // ---- Trình phát (nằm trong PlaybackService) ----
+              var player by mutableStateOf<Player?>(null)
+              var inPip by mutableStateOf(false)
+              private var releaseController: (() -> Unit)? = null
+
               init {
                   NewPipe.init(DownloaderImpl, Localization("vi", "VN"), ContentCountry("VN"))
                   loadFeed(currentQuery)
+                  connectPlayer()
+                  reloadUserData()
+              }
+
+              // ================= Tài khoản =================
+              private fun reloadUserData() {
+                  val u = userKey
+                  history = if (u == null) emptyList() else store.history(u)
+                  searchHistory = if (u == null) emptyList() else store.searches(u)
+              }
+
+              fun login(name: String, password: String) {
+                  val err = store.loginOrRegister(name, password)
+                  loginError = err
+                  if (err == null) {
+                      userKey = store.currentUser()
+                      userName = userKey?.let { store.displayName(it) } ?: ""
+                      reloadUserData()
+                  }
+              }
+
+              fun logout() {
+                  store.logout()
+                  userKey = null
+                  userName = ""
+                  loginError = null
+                  reloadUserData()
+              }
+
+              fun clearHistory() {
+                  userKey?.let { store.clearHistory(it) }
+                  reloadUserData()
+              }
+
+              fun clearSearchHistory() {
+                  userKey?.let { store.clearSearches(it) }
+                  reloadUserData()
+              }
+
+              private fun recordHistory(w: WatchState) {
+                  val u = userKey ?: return
+                  store.addHistory(
+                      u,
+                      HistoryEntry(w.pageUrl, w.title, w.uploader, w.thumb, w.duration, System.currentTimeMillis())
+                  )
+                  history = store.history(u)
+              }
+
+              private fun connectPlayer() {
+                  val ctx = getApplication<Application>()
+                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+                  val future = MediaController.Builder(ctx, token).buildAsync()
+                  future.addListener({
+                      try {
+                          val controller = future.get()
+                          controller.addListener(object : Player.Listener {
+                              override fun onPlayerError(error: PlaybackException) {
+                                  playerError =
+                                      "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
+                              }
+
+                              override fun onPlaybackStateChanged(playbackState: Int) {
+                                  if (playbackState == Player.STATE_READY) playerError = null
+                              }
+                          })
+                          player = controller
+                      } catch (e: Exception) {
+                          playerError = "Không kết nối được trình phát nền"
+                      }
+                  }, ContextCompat.getMainExecutor(ctx))
+                  releaseController = { MediaController.releaseFuture(future) }
+              }
+
+              fun stopPlayback() {
+                  player?.run {
+                      stop()
+                      clearMediaItems()
+                  }
+                  closeWatch()
+              }
+
+              override fun onCleared() {
+                  releaseController?.invoke()
+                  super.onCleared()
               }
 
               // ================= Feed =================
@@ -830,6 +1037,10 @@ jobs:
                   suggestions = emptyList()
                   selectedChip = -1
                   currentQuery = q
+                  userKey?.let {
+                      store.addSearch(it, q.trim())
+                      searchHistory = store.searches(it)
+                  }
                   loadFeed(q)
               }
 
@@ -845,7 +1056,9 @@ jobs:
                   selectedQuality = 0
                   watchJob = viewModelScope.launch {
                       try {
-                          watch = withContext(Dispatchers.IO) { loadWatch(url) }
+                          val loaded = withContext(Dispatchers.IO) { loadWatch(url) }
+                          watch = loaded
+                          recordHistory(loaded)
                       } catch (e: CancellationException) {
                           throw e
                       } catch (e: Exception) {
@@ -856,6 +1069,10 @@ jobs:
               }
 
               fun closeWatch() {
+                  player?.run {
+                      stop()
+                      clearMediaItems()
+                  }
                   watchJob?.cancel()
                   watching = false
                   fullscreen = false
@@ -897,9 +1114,339 @@ jobs:
                       likes = info.likeCount,
                       date = info.textualUploadDate ?: "",
                       description = desc,
+                      thumb = info.thumbnails.lastOrNull()?.url,
+                      duration = info.duration,
                       qualities = qualities,
                       related = info.relatedItems.filterIsInstance<StreamInfoItem>()
                   )
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/PlaybackService.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.content.Intent
+          import androidx.media3.common.AudioAttributes
+          import androidx.media3.common.C
+          import androidx.media3.datasource.DefaultHttpDataSource
+          import androidx.media3.datasource.ResolvingDataSource
+          import androidx.media3.exoplayer.ExoPlayer
+          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+          import androidx.media3.session.MediaSession
+          import androidx.media3.session.MediaSessionService
+
+          /**
+           * Trình phát chạy trong một dịch vụ nền (foreground service) nên tắt màn hình
+           * hoặc thoát app vẫn tiếp tục phát, có thông báo điều khiển trên màn hình khóa.
+           */
+          class PlaybackService : MediaSessionService() {
+              private var session: MediaSession? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+
+                  // Mỗi link stream cần đúng User-Agent của "client" YouTube tạo ra nó
+                  val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+                  val dataSource = ResolvingDataSource.Factory(http) { spec ->
+                      spec.withAdditionalHeaders(mapOf("User-Agent" to userAgentFor(spec.uri.toString())))
+                  }
+
+                  val player = ExoPlayer.Builder(this)
+                      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+                      .setAudioAttributes(AudioAttributes.DEFAULT, true)
+                      .setHandleAudioBecomingNoisy(true)
+                      .setWakeMode(C.WAKE_MODE_NETWORK)
+                      .build()
+
+                  session = MediaSession.Builder(this, player).build()
+              }
+
+              override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+              // Vuốt app khỏi danh sách gần đây thì dừng hẳn
+              override fun onTaskRemoved(rootIntent: Intent?) {
+                  session?.player?.pause()
+                  stopSelf()
+              }
+
+              override fun onDestroy() {
+                  session?.run {
+                      player.release()
+                      release()
+                  }
+                  session = null
+                  super.onDestroy()
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/Profile.kt <<'EOF'
+          package com.example.adfreetube
+
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.aspectRatio
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardActions
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.automirrored.filled.ArrowBack
+          import androidx.compose.material.icons.filled.Search
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TextButton
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.ImeAction
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.text.input.PasswordVisualTransformation
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import coil.compose.AsyncImage
+
+          @Composable
+          fun ProfileScreen(vm: MainViewModel) {
+              Column(Modifier.fillMaxSize()) {
+                  Row(
+                      Modifier
+                          .fillMaxWidth()
+                          .height(56.dp)
+                          .padding(horizontal = 4.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      IconButton(onClick = { vm.showProfile = false }) {
+                          Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại")
+                      }
+                      Text("Tài khoản", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                  }
+                  if (vm.userKey == null) LoginForm(vm) else ProfileContent(vm)
+              }
+          }
+
+          @Composable
+          private fun LoginForm(vm: MainViewModel) {
+              var name by remember { mutableStateOf("") }
+              var pass by remember { mutableStateOf("") }
+
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                  Text(
+                      "Đăng nhập để lưu lịch sử xem và lịch sử tìm kiếm của bạn.",
+                      fontSize = 15.sp
+                  )
+                  OutlinedTextField(
+                      value = name,
+                      onValueChange = { name = it },
+                      label = { Text("Tên đăng nhập") },
+                      singleLine = true,
+                      modifier = Modifier.fillMaxWidth()
+                  )
+                  OutlinedTextField(
+                      value = pass,
+                      onValueChange = { pass = it },
+                      label = { Text("Mật khẩu") },
+                      singleLine = true,
+                      visualTransformation = PasswordVisualTransformation(),
+                      keyboardOptions = KeyboardOptions(
+                          keyboardType = KeyboardType.Password,
+                          imeAction = ImeAction.Done
+                      ),
+                      keyboardActions = KeyboardActions(onDone = { vm.login(name, pass) }),
+                      modifier = Modifier.fillMaxWidth()
+                  )
+                  vm.loginError?.let {
+                      Text(it, color = MaterialTheme.colorScheme.error)
+                  }
+                  Button(onClick = { vm.login(name, pass) }, modifier = Modifier.fillMaxWidth()) {
+                      Text("Đăng nhập / Tạo tài khoản")
+                  }
+                  Text(
+                      "Tên chưa có sẽ tự tạo tài khoản mới. Tài khoản và lịch sử được lưu ngay trên điện thoại này, không gửi đi đâu cả.",
+                      fontSize = 12.sp,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                  )
+              }
+          }
+
+          @Composable
+          private fun ProfileContent(vm: MainViewModel) {
+              LazyColumn(Modifier.fillMaxSize()) {
+                  item {
+                      Row(
+                          Modifier
+                              .fillMaxWidth()
+                              .padding(16.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          InitialBadge(vm.userName, 56.dp)
+                          Spacer(Modifier.width(16.dp))
+                          Column(Modifier.weight(1f)) {
+                              Text(vm.userName, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                              Text(
+                                  "Đã đăng nhập",
+                                  fontSize = 12.sp,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                          OutlinedButton(onClick = { vm.logout() }) { Text("Đăng xuất") }
+                      }
+                  }
+
+                  item {
+                      SectionHeader(
+                          "Lịch sử tìm kiếm",
+                          if (vm.searchHistory.isEmpty()) null else "Xóa"
+                      ) { vm.clearSearchHistory() }
+                  }
+                  if (vm.searchHistory.isEmpty()) {
+                      item { EmptyNote("Chưa có tìm kiếm nào") }
+                  } else {
+                      items(vm.searchHistory) { q ->
+                          Row(
+                              Modifier
+                                  .fillMaxWidth()
+                                  .clickable {
+                                      vm.showProfile = false
+                                      vm.submitSearch(q)
+                                  }
+                                  .padding(horizontal = 16.dp, vertical = 12.dp),
+                              verticalAlignment = Alignment.CenterVertically
+                          ) {
+                              Icon(
+                                  Icons.Filled.Search, null,
+                                  Modifier.size(20.dp),
+                                  tint = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                              Spacer(Modifier.width(16.dp))
+                              Text(q, fontSize = 15.sp)
+                          }
+                      }
+                  }
+
+                  item {
+                      SectionHeader(
+                          "Lịch sử xem",
+                          if (vm.history.isEmpty()) null else "Xóa tất cả"
+                      ) { vm.clearHistory() }
+                  }
+                  if (vm.history.isEmpty()) {
+                      item { EmptyNote("Chưa xem video nào") }
+                  } else {
+                      items(vm.history) { e ->
+                          HistoryRow(e) { vm.play(e.url, e.title) }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun SectionHeader(title: String, action: String?, onAction: () -> Unit) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(start = 16.dp, end = 8.dp, top = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                  if (action != null) TextButton(onClick = onAction) { Text(action) }
+              }
+          }
+
+          @Composable
+          private fun EmptyNote(text: String) {
+              Text(
+                  text,
+                  fontSize = 13.sp,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+              )
+          }
+
+          @Composable
+          private fun HistoryRow(e: HistoryEntry, onClick: () -> Unit) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .clickable(onClick = onClick)
+                      .padding(horizontal = 12.dp, vertical = 6.dp)
+              ) {
+                  Box {
+                      AsyncImage(
+                          model = e.thumb,
+                          contentDescription = null,
+                          contentScale = ContentScale.Crop,
+                          modifier = Modifier
+                              .width(140.dp)
+                              .aspectRatio(16 / 9f)
+                              .clip(RoundedCornerShape(8.dp))
+                              .background(MaterialTheme.colorScheme.surfaceVariant)
+                      )
+                      if (e.duration > 0) {
+                          Text(
+                              formatDuration(e.duration),
+                              color = Color.White,
+                              fontSize = 11.sp,
+                              fontWeight = FontWeight.SemiBold,
+                              modifier = Modifier
+                                  .align(Alignment.BottomEnd)
+                                  .padding(4.dp)
+                                  .clip(RoundedCornerShape(4.dp))
+                                  .background(Color(0xCC000000))
+                                  .padding(horizontal = 4.dp, vertical = 1.dp)
+                          )
+                      }
+                  }
+                  Spacer(Modifier.width(12.dp))
+                  Column {
+                      Text(
+                          e.title,
+                          maxLines = 2,
+                          overflow = TextOverflow.Ellipsis,
+                          fontSize = 14.sp,
+                          lineHeight = 19.sp,
+                          fontWeight = FontWeight.Medium
+                      )
+                      Text(
+                          e.uploader,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                          fontSize = 12.sp,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                  }
               }
           }
           EOF
@@ -958,6 +1505,130 @@ jobs:
           }
           EOF
           mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/UserStore.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.content.Context
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.security.MessageDigest
+          import java.security.SecureRandom
+
+          data class HistoryEntry(
+              val url: String,
+              val title: String,
+              val uploader: String,
+              val thumb: String?,
+              val duration: Long,
+              val time: Long
+          )
+
+          /**
+           * Tài khoản cục bộ: tên + mật khẩu (băm SHA-256 có muối), lịch sử xem và lịch sử tìm kiếm
+           * của từng tài khoản. Tất cả lưu trên chính điện thoại này.
+           */
+          class UserStore(context: Context) {
+              private val prefs = context.getSharedPreferences("bangnc_tube", Context.MODE_PRIVATE)
+
+              private fun users() = JSONObject(prefs.getString("users", "{}") ?: "{}")
+
+              fun currentUser(): String? = prefs.getString("current_user", null)
+
+              fun displayName(key: String): String = users().optJSONObject(key)?.optString("name", key) ?: key
+
+              fun logout() {
+                  prefs.edit().remove("current_user").apply()
+              }
+
+              /** Tên đã có -> kiểm tra mật khẩu; tên chưa có -> tạo mới. Trả về null nếu OK, ngược lại là thông báo lỗi. */
+              fun loginOrRegister(name: String, password: String): String? {
+                  val n = name.trim()
+                  if (n.length < 2) return "Tên cần ít nhất 2 ký tự"
+                  if (password.length < 4) return "Mật khẩu cần ít nhất 4 ký tự"
+                  val users = users()
+                  val key = n.lowercase()
+                  if (users.has(key)) {
+                      val u = users.getJSONObject(key)
+                      if (hash(password, u.getString("salt")) != u.getString("hash")) return "Sai mật khẩu"
+                  } else {
+                      val salt = newSalt()
+                      users.put(
+                          key,
+                          JSONObject().put("name", n).put("salt", salt).put("hash", hash(password, salt))
+                      )
+                      prefs.edit().putString("users", users.toString()).apply()
+                  }
+                  prefs.edit().putString("current_user", key).apply()
+                  return null
+              }
+
+              // ---------- Lịch sử xem ----------
+              fun history(user: String): List<HistoryEntry> {
+                  val arr = JSONArray(prefs.getString("history_$user", "[]") ?: "[]")
+                  return (0 until arr.length()).map { i ->
+                      val o = arr.getJSONObject(i)
+                      HistoryEntry(
+                          o.getString("url"),
+                          o.optString("title"),
+                          o.optString("uploader"),
+                          o.optString("thumb").ifEmpty { null },
+                          o.optLong("duration", -1),
+                          o.optLong("time")
+                      )
+                  }
+              }
+
+              fun addHistory(user: String, e: HistoryEntry) {
+                  val list = (listOf(e) + history(user).filter { it.url != e.url }).take(200)
+                  val arr = JSONArray()
+                  list.forEach {
+                      arr.put(
+                          JSONObject()
+                              .put("url", it.url)
+                              .put("title", it.title)
+                              .put("uploader", it.uploader)
+                              .put("thumb", it.thumb ?: "")
+                              .put("duration", it.duration)
+                              .put("time", it.time)
+                      )
+                  }
+                  prefs.edit().putString("history_$user", arr.toString()).apply()
+              }
+
+              fun clearHistory(user: String) {
+                  prefs.edit().remove("history_$user").apply()
+              }
+
+              // ---------- Lịch sử tìm kiếm ----------
+              fun searches(user: String): List<String> {
+                  val arr = JSONArray(prefs.getString("search_$user", "[]") ?: "[]")
+                  return (0 until arr.length()).map { arr.getString(it) }
+              }
+
+              fun addSearch(user: String, q: String) {
+                  val list = (listOf(q) + searches(user).filter { !it.equals(q, ignoreCase = true) }).take(30)
+                  val arr = JSONArray()
+                  list.forEach { arr.put(it) }
+                  prefs.edit().putString("search_$user", arr.toString()).apply()
+              }
+
+              fun clearSearches(user: String) {
+                  prefs.edit().remove("search_$user").apply()
+              }
+
+              private fun hash(password: String, salt: String): String =
+                  MessageDigest.getInstance("SHA-256")
+                      .digest((salt + password).toByteArray())
+                      .joinToString("") { "%02x".format(it) }
+
+              private fun newSalt(): String {
+                  val b = ByteArray(16)
+                  SecureRandom().nextBytes(b)
+                  return b.joinToString("") { "%02x".format(it) }
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
           cat > app/src/main/java/com/example/adfreetube/WatchScreen.kt <<'EOF'
           package com.example.adfreetube
 
@@ -1010,6 +1681,7 @@ jobs:
           import androidx.lifecycle.Lifecycle
           import androidx.lifecycle.LifecycleEventObserver
           import androidx.media3.common.MediaItem
+          import androidx.media3.common.MediaMetadata
           import androidx.media3.common.PlaybackException
           import androidx.media3.common.Player
           import androidx.media3.datasource.DefaultHttpDataSource
@@ -1019,57 +1691,39 @@ jobs:
 
           @Composable
           fun WatchScreen(vm: MainViewModel) {
-              val ctx = LocalContext.current
               val w = vm.watch
               val quality = w?.qualities?.getOrNull(vm.selectedQuality)
+              val player = vm.player
+              val big = vm.fullscreen || vm.inPip
 
-              val exo = remember {
-                  ExoPlayer.Builder(ctx).build().apply {
-                      playWhenReady = true
-                      addListener(object : Player.Listener {
-                          override fun onPlayerError(error: PlaybackException) {
-                              vm.playerError =
-                                  "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
-                          }
-
-                          override fun onPlaybackStateChanged(playbackState: Int) {
-                              if (playbackState == Player.STATE_READY) vm.playerError = null
-                          }
-                      })
-                  }
-              }
-              DisposableEffect(Unit) { onDispose { exo.release() } }
-
-              // Tạm dừng khi thoát app ra màn hình chính
-              val lifecycleOwner = LocalLifecycleOwner.current
-              DisposableEffect(lifecycleOwner) {
-                  val observer = LifecycleEventObserver { _, event ->
-                      if (event == Lifecycle.Event.ON_STOP) exo.pause()
-                  }
-                  lifecycleOwner.lifecycle.addObserver(observer)
-                  onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-              }
+              // Gỡ PlayerView khỏi trình phát khi rời màn hình (trình phát vẫn sống trong dịch vụ nền)
+              val holder = remember { arrayOfNulls<PlayerView>(1) }
+              DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
 
               // Nạp video mới / đổi chất lượng (giữ nguyên vị trí đang xem khi chỉ đổi chất lượng)
               var lastPage by remember { mutableStateOf<String?>(null) }
-              LaunchedEffect(w?.pageUrl, quality?.url) {
-                  if (w == null || quality == null) return@LaunchedEffect
-                  val pos = if (lastPage == w.pageUrl) exo.currentPosition else 0L
+              LaunchedEffect(w?.pageUrl, quality?.url, player) {
+                  if (w == null || quality == null || player == null) return@LaunchedEffect
+                  val pos = if (lastPage == w.pageUrl) player.currentPosition else 0L
                   lastPage = w.pageUrl
                   vm.playerError = null
-                  val dataSource = DefaultHttpDataSource.Factory()
-                      .setUserAgent(userAgentFor(quality.url))
-                      .setAllowCrossProtocolRedirects(true)
-                  val source = DefaultMediaSourceFactory(dataSource)
-                      .createMediaSource(MediaItem.fromUri(quality.url))
-                  exo.setMediaSource(source, pos)
-                  exo.prepare()
-                  exo.playWhenReady = true
+                  val item = MediaItem.Builder()
+                      .setUri(quality.url)
+                      .setMediaMetadata(
+                          MediaMetadata.Builder()
+                              .setTitle(w.title)
+                              .setArtist(w.uploader)
+                              .build()
+                      )
+                      .build()
+                  player.setMediaItem(item, pos)
+                  player.prepare()
+                  player.play()
               }
 
               Column(Modifier.fillMaxSize()) {
                   Box(
-                      (if (vm.fullscreen) Modifier.fillMaxSize()
+                      (if (big) Modifier.fillMaxSize()
                       else Modifier
                           .fillMaxWidth()
                           .aspectRatio(16 / 9f))
@@ -1078,20 +1732,23 @@ jobs:
                       AndroidView(
                           factory = { c ->
                               PlayerView(c).apply {
-                                  player = exo
                                   setShowNextButton(false)
                                   setShowPreviousButton(false)
                                   setFullscreenButtonClickListener { isFull -> vm.fullscreen = isFull }
-                              }
+                              }.also { holder[0] = it }
+                          },
+                          update = { view ->
+                              view.player = player
+                              view.useController = !vm.inPip
                           },
                           modifier = Modifier.fillMaxSize()
                       )
-                      if (w == null && vm.watchLoading) {
+                      if (w == null && vm.watchLoading && !vm.inPip) {
                           CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White)
                       }
                   }
 
-                  if (!vm.fullscreen) {
+                  if (!big) {
                       if (w == null) {
                           Column(Modifier.padding(12.dp)) {
                               if (vm.watchTitleHint.isNotEmpty()) {
@@ -1241,6 +1898,63 @@ jobs:
                   }
               }
           }
+          EOF
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#FF0000"
+                  android:pathData="M37,36 H71 A9,9 0 0 1 80,45 V63 A9,9 0 0 1 71,72 H37 A9,9 0 0 1 28,63 V45 A9,9 0 0 1 37,36 Z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M48,46 L48,62 L62,54 Z" />
+          </vector>
+          EOF
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+          mkdir -p app/src/main/res/mipmap-mdpi
+          cat > app/src/main/res/mipmap-mdpi/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="96dp"
+              android:height="96dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M0,0 H108 V108 H0 Z" />
+              <path
+                  android:fillColor="#FF0000"
+                  android:pathData="M33,32 H75 A10,10 0 0 1 85,42 V66 A10,10 0 0 1 75,76 H33 A10,10 0 0 1 23,66 V42 A10,10 0 0 1 33,32 Z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M46,44 L46,64 L64,54 Z" />
+          </vector>
+          EOF
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#FFFFFF</color>
+          </resources>
+          EOF
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">BangNC _ Tube</string>
+          </resources>
           EOF
           cat > build.gradle.kts <<'EOF'
           plugins {
