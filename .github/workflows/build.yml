@@ -1227,9 +1227,9 @@ jobs:
       - name: Tom tat loi
         if: failure()
         run: |
-          echo '### Loi build (gui anh phan nay cho Claude)' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Loi bien dich (gui anh phan nay cho Claude)' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -nE "^e: |What went wrong|Could not|FAILED|Execution failed|Unsupported|error:" -A4 build.log | head -80 >> "$GITHUB_STEP_SUMMARY" || true
+          { grep -E "^e: " build.log | sed -E 's#^e: file://.*/adfreetube/#e: #' | head -30 | fold -s -w 55; } >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
