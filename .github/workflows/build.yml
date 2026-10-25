@@ -51,9 +51,10 @@ jobs:
           dependencies {
               coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 
-              // Lấy dữ liệu YouTube không quảng cáo. Kiểm tra bản mới nhất tại
+              // Lấy dữ liệu YouTube không quảng cáo. Bản v0.25.1 trở lên đã sửa lỗi
+              // "The page needs to be reloaded". Kiểm tra bản mới nhất tại
               // https://github.com/TeamNewPipe/NewPipeExtractor/releases
-              implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.6")
+              implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
               val media3 = "1.3.1"
@@ -64,6 +65,8 @@ jobs:
               implementation(platform("androidx.compose:compose-bom:2024.06.00"))
               implementation("androidx.compose.material3:material3")
               implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material:material-icons-core")
+              implementation("androidx.core:core-ktx:1.13.1")
               implementation("androidx.activity:activity-compose:1.9.0")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
               implementation("io.coil-kt:coil-compose:2.6.0")
@@ -78,7 +81,7 @@ jobs:
               <application
                   android:allowBackup="true"
                   android:label="AdFreeTube"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -92,49 +95,448 @@ jobs:
           </manifest>
           EOF
           mkdir -p app/src/main/java/com/example/adfreetube
-          cat > app/src/main/java/com/example/adfreetube/DownloaderImpl.kt <<'EOF'
+          cat > app/src/main/java/com/example/adfreetube/Components.kt <<'EOF'
           package com.example.adfreetube
 
-          import okhttp3.OkHttpClient
-          import okhttp3.RequestBody.Companion.toRequestBody
-          import org.schabi.newpipe.extractor.downloader.Downloader
-          import org.schabi.newpipe.extractor.downloader.Request
-          import org.schabi.newpipe.extractor.downloader.Response
-          import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
-          import java.util.concurrent.TimeUnit
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.aspectRatio
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.PlayArrow
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TextButton
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import coil.compose.AsyncImage
+          import org.schabi.newpipe.extractor.stream.StreamInfoItem
+          import org.schabi.newpipe.extractor.stream.StreamType
 
-          /** NewPipeExtractor cần một Downloader để gửi HTTP request. */
-          object DownloaderImpl : Downloader() {
-              const val USER_AGENT =
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-
-              private val client = OkHttpClient.Builder()
-                  .readTimeout(30, TimeUnit.SECONDS)
-                  .build()
-
-              override fun execute(request: Request): Response {
-                  val body = request.dataToSend()?.toRequestBody()
-                  val builder = okhttp3.Request.Builder()
-                      .method(request.httpMethod(), body)
-                      .url(request.url())
-                      .header("User-Agent", USER_AGENT)
-
-                  request.headers().forEach { (name, values) ->
-                      builder.removeHeader(name)
-                      values.forEach { builder.addHeader(name, it) }
+          @Composable
+          fun YouTubeLogo() {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                  Box(
+                      Modifier
+                          .size(width = 30.dp, height = 21.dp)
+                          .clip(RoundedCornerShape(6.dp))
+                          .background(Color(0xFFFF0000)),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
                   }
+                  Spacer(Modifier.width(6.dp))
+                  Text("AdFreeTube", fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+              }
+          }
 
-                  client.newCall(builder.build()).execute().use { resp ->
-                      if (resp.code == 429) {
-                          throw ReCaptchaException("reCaptcha Challenge requested", request.url())
-                      }
-                      return Response(
-                          resp.code,
-                          resp.message,
-                          resp.headers.toMultimap(),
-                          resp.body?.string(),
-                          resp.request.url.toString()
+          @Composable
+          fun Avatar(url: String?, size: Dp = 36.dp) {
+              AsyncImage(
+                  model = url,
+                  contentDescription = null,
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier
+                      .size(size)
+                      .clip(CircleShape)
+                      .background(MaterialTheme.colorScheme.surfaceVariant)
+              )
+          }
+
+          @Composable
+          fun Pill(text: String, icon: ImageVector? = null, onClick: (() -> Unit)? = null) {
+              val base = Modifier
+                  .clip(RoundedCornerShape(20.dp))
+                  .background(MaterialTheme.colorScheme.surfaceVariant)
+              Row(
+                  (if (onClick != null) base.clickable(onClick = onClick) else base)
+                      .padding(horizontal = 14.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  if (icon != null) {
+                      Icon(icon, null, Modifier.size(18.dp))
+                      Spacer(Modifier.width(6.dp))
+                  }
+                  Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+              }
+          }
+
+          @Composable
+          fun ErrorBox(message: String, onRetry: () -> Unit) {
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(24.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                  Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                  TextButton(onClick = onRetry) { Text("Thử lại") }
+              }
+          }
+
+          /** Thẻ video kiểu YouTube: thumbnail 16:9 full-width, avatar kênh + tiêu đề + thông tin. */
+          @Composable
+          fun VideoCard(item: StreamInfoItem, onClick: () -> Unit) {
+              val live = item.streamType == StreamType.LIVE_STREAM
+              val badge = when {
+                  live -> "TRỰC TIẾP"
+                  item.duration > 0 -> formatDuration(item.duration)
+                  else -> null
+              }
+              val views = item.viewCount.takeIf { it >= 0 }
+                  ?.let { formatCount(it) + if (live) " đang xem" else " lượt xem" }
+              val meta = listOfNotNull(
+                  item.uploaderName?.takeIf { it.isNotBlank() },
+                  views,
+                  item.textualUploadDate?.takeIf { it.isNotBlank() }
+              ).joinToString(" • ")
+
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .clickable(onClick = onClick)
+                      .padding(bottom = 8.dp)
+              ) {
+                  Box {
+                      AsyncImage(
+                          model = item.thumbnails.lastOrNull()?.url,
+                          contentDescription = null,
+                          contentScale = ContentScale.Crop,
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .aspectRatio(16 / 9f)
+                              .background(MaterialTheme.colorScheme.surfaceVariant)
                       )
+                      if (badge != null) {
+                          Text(
+                              badge,
+                              color = Color.White,
+                              fontSize = 12.sp,
+                              fontWeight = FontWeight.SemiBold,
+                              modifier = Modifier
+                                  .align(Alignment.BottomEnd)
+                                  .padding(8.dp)
+                                  .clip(RoundedCornerShape(4.dp))
+                                  .background(if (live) Color(0xFFCC0000) else Color(0xCC000000))
+                                  .padding(horizontal = 5.dp, vertical = 1.dp)
+                          )
+                      }
+                  }
+                  Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
+                      Avatar(item.uploaderAvatars.lastOrNull()?.url)
+                      Spacer(Modifier.width(12.dp))
+                      Column {
+                          Text(
+                              item.name,
+                              maxLines = 2,
+                              overflow = TextOverflow.Ellipsis,
+                              fontSize = 15.sp,
+                              lineHeight = 20.sp,
+                              fontWeight = FontWeight.Medium
+                          )
+                          Spacer(Modifier.height(2.dp))
+                          Text(
+                              meta,
+                              maxLines = 2,
+                              overflow = TextOverflow.Ellipsis,
+                              fontSize = 12.sp,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+                  }
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/Format.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.ContextWrapper
+          import java.util.Locale
+
+          /** 1234567 -> "1,2 Tr" (kiểu YouTube tiếng Việt: N = nghìn, Tr = triệu, Tỷ = tỷ). */
+          fun formatCount(n: Long): String {
+              if (n < 0) return ""
+              fun f(v: Double, unit: String): String {
+                  val s = if (v >= 100 || v == Math.floor(v)) String.format(Locale.US, "%.0f", v)
+                  else String.format(Locale.US, "%.1f", v)
+                  return s.replace('.', ',') + " " + unit
+              }
+              return when {
+                  n >= 1_000_000_000L -> f(n / 1e9, "Tỷ")
+                  n >= 1_000_000L -> f(n / 1e6, "Tr")
+                  n >= 1_000L -> f(n / 1e3, "N")
+                  else -> n.toString()
+              }
+          }
+
+          fun formatDuration(sec: Long): String {
+              if (sec < 0) return ""
+              val h = sec / 3600
+              val m = (sec % 3600) / 60
+              val s = sec % 60
+              return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+              else String.format(Locale.US, "%d:%02d", m, s)
+          }
+
+          tailrec fun Context.findActivity(): Activity? = when (this) {
+              is Activity -> this
+              is ContextWrapper -> baseContext.findActivity()
+              else -> null
+          }
+
+          private const val ANDROID_UA =
+              "com.google.android.youtube/19.28.35 (Linux; U; Android 15; GB) gzip"
+          private const val IOS_UA =
+              "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)"
+
+          /** Link stream của từng "client" YouTube cần đúng User-Agent, nếu không dễ bị lỗi 403. */
+          fun userAgentFor(url: String): String = when {
+              "c=IOS" in url -> IOS_UA
+              "c=ANDROID" in url -> ANDROID_UA
+              else -> DownloaderImpl.USER_AGENT
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/HomeScreen.kt <<'EOF'
+          package com.example.adfreetube
+
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.lazy.itemsIndexed
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardActions
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.automirrored.filled.ArrowBack
+          import androidx.compose.material.icons.filled.Close
+          import androidx.compose.material.icons.filled.Search
+          import androidx.compose.material3.CircularProgressIndicator
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TextField
+          import androidx.compose.material3.TextFieldDefaults
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.derivedStateOf
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalFocusManager
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.ImeAction
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+
+          @Composable
+          fun HomeScreen(vm: MainViewModel) {
+              Column(Modifier.fillMaxSize()) {
+                  if (vm.searching) {
+                      SearchTopBar(vm)
+                      SuggestionList(vm)
+                  } else {
+                      HomeTopBar(vm)
+                      Chips(vm)
+                      Feed(vm)
+                  }
+              }
+          }
+
+          @Composable
+          private fun HomeTopBar(vm: MainViewModel) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .height(56.dp)
+                      .padding(horizontal = 12.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  YouTubeLogo()
+                  Spacer(Modifier.weight(1f))
+                  IconButton(onClick = { vm.openSearch() }) {
+                      Icon(Icons.Filled.Search, contentDescription = "Tìm kiếm")
+                  }
+              }
+          }
+
+          @Composable
+          private fun SearchTopBar(vm: MainViewModel) {
+              val focus = remember { FocusRequester() }
+              val focusManager = LocalFocusManager.current
+              LaunchedEffect(Unit) { focus.requestFocus() }
+
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 4.dp, vertical = 4.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  IconButton(onClick = { vm.searching = false }) {
+                      Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại")
+                  }
+                  TextField(
+                      value = vm.searchText,
+                      onValueChange = { vm.onSearchTextChange(it) },
+                      placeholder = { Text("Tìm kiếm") },
+                      singleLine = true,
+                      shape = RoundedCornerShape(24.dp),
+                      colors = TextFieldDefaults.colors(
+                          focusedIndicatorColor = Color.Transparent,
+                          unfocusedIndicatorColor = Color.Transparent,
+                          disabledIndicatorColor = Color.Transparent,
+                          focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                          unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                      ),
+                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                      keyboardActions = KeyboardActions(onSearch = {
+                          focusManager.clearFocus()
+                          vm.submitSearch(vm.searchText)
+                      }),
+                      trailingIcon = {
+                          if (vm.searchText.isNotEmpty()) {
+                              IconButton(onClick = { vm.onSearchTextChange("") }) {
+                                  Icon(Icons.Filled.Close, contentDescription = "Xóa")
+                              }
+                          }
+                      },
+                      modifier = Modifier
+                          .weight(1f)
+                          .focusRequester(focus)
+                  )
+                  Spacer(Modifier.width(8.dp))
+              }
+          }
+
+          @Composable
+          private fun SuggestionList(vm: MainViewModel) {
+              LazyColumn(Modifier.fillMaxSize()) {
+                  items(vm.suggestions) { s ->
+                      Row(
+                          Modifier
+                              .fillMaxWidth()
+                              .clickable { vm.submitSearch(s) }
+                              .padding(horizontal = 16.dp, vertical = 14.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Icon(
+                              Icons.Filled.Search, null,
+                              Modifier.size(20.dp),
+                              tint = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Spacer(Modifier.width(16.dp))
+                          Text(s, fontSize = 16.sp)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun Chips(vm: MainViewModel) {
+              LazyRow(
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                  itemsIndexed(vm.chips) { i, chip ->
+                      val selected = vm.selectedChip == i
+                      val colors = MaterialTheme.colorScheme
+                      Text(
+                          chip.first,
+                          color = if (selected) colors.background else colors.onBackground,
+                          fontSize = 14.sp,
+                          fontWeight = FontWeight.Medium,
+                          modifier = Modifier
+                              .clip(RoundedCornerShape(8.dp))
+                              .background(if (selected) colors.onBackground else colors.surfaceVariant)
+                              .clickable { vm.selectChip(i) }
+                              .padding(horizontal = 12.dp, vertical = 7.dp)
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun Feed(vm: MainViewModel) {
+              val listState = vm.feedListState
+              val nearEnd by remember {
+                  derivedStateOf {
+                      val info = listState.layoutInfo
+                      val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                      info.totalItemsCount > 0 && last >= info.totalItemsCount - 3
+                  }
+              }
+              LaunchedEffect(nearEnd, vm.feed.size) {
+                  if (nearEnd) vm.loadMore()
+              }
+
+              Box(Modifier.fillMaxSize()) {
+                  LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
+                      items(vm.feed) { item ->
+                          VideoCard(item) { vm.play(item.url, item.name) }
+                      }
+                      if (vm.moreLoading) {
+                          item {
+                              Box(
+                                  Modifier
+                                      .fillMaxWidth()
+                                      .padding(16.dp),
+                                  contentAlignment = Alignment.Center
+                              ) { CircularProgressIndicator(Modifier.size(24.dp)) }
+                          }
+                      }
+                  }
+                  if (vm.feedLoading) {
+                      CircularProgressIndicator(Modifier.align(Alignment.Center))
+                  }
+                  vm.feedError?.let { msg ->
+                      ErrorBox(msg) { vm.loadFeed(vm.currentQuery) }
                   }
               }
           }
@@ -143,205 +545,653 @@ jobs:
           cat > app/src/main/java/com/example/adfreetube/MainActivity.kt <<'EOF'
           package com.example.adfreetube
 
+          import android.content.pm.ActivityInfo
           import android.os.Bundle
           import androidx.activity.ComponentActivity
           import androidx.activity.compose.BackHandler
           import androidx.activity.compose.setContent
           import androidx.activity.viewModels
-          import androidx.compose.foundation.clickable
-          import androidx.compose.foundation.layout.*
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.foundation.text.KeyboardActions
-          import androidx.compose.foundation.text.KeyboardOptions
-          import androidx.compose.material3.*
-          import androidx.compose.runtime.*
-          import androidx.compose.ui.Alignment
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Surface
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
           import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.layout.ContentScale
           import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.text.input.ImeAction
-          import androidx.compose.ui.text.style.TextOverflow
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.viewinterop.AndroidView
-          import androidx.media3.common.MediaItem
-          import androidx.media3.datasource.DefaultHttpDataSource
-          import androidx.media3.exoplayer.ExoPlayer
-          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-          import androidx.media3.ui.PlayerView
-          import coil.compose.AsyncImage
-          import org.schabi.newpipe.extractor.NewPipe
-          import org.schabi.newpipe.extractor.stream.StreamInfoItem
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
 
           class MainActivity : ComponentActivity() {
               private val vm: MainViewModel by viewModels()
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  NewPipe.init(DownloaderImpl)
-                  setContent { MaterialTheme { App(vm) } }
+                  WindowCompat.setDecorFitsSystemWindows(window, true)
+                  setContent {
+                      AdFreeTheme { App(vm) }
+                  }
               }
           }
 
-          @OptIn(ExperimentalMaterial3Api::class)
           @Composable
           fun App(vm: MainViewModel) {
-              BackHandler(enabled = vm.playingUrl != null) { vm.closePlayer() }
-
-              Scaffold(topBar = { TopAppBar(title = { Text("AdFreeTube") }) }) { pad ->
-                  Column(Modifier.padding(pad).fillMaxSize()) {
-
-                      vm.playingUrl?.let { url ->
-                          VideoPlayer(url)
-                          Text(
-                              vm.playingTitle,
-                              style = MaterialTheme.typography.titleMedium,
-                              modifier = Modifier.padding(12.dp)
-                          )
-                          TextButton(onClick = { vm.closePlayer() }, modifier = Modifier.padding(horizontal = 4.dp)) {
-                              Text("Đóng trình phát")
-                          }
-                      }
-
-                      OutlinedTextField(
-                          value = vm.query,
-                          onValueChange = { vm.query = it },
-                          label = { Text("Tìm kiếm video") },
-                          singleLine = true,
-                          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                          keyboardActions = KeyboardActions(onSearch = { vm.search() }),
-                          modifier = Modifier.fillMaxWidth().padding(12.dp)
-                      )
-
-                      if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                      vm.error?.let {
-                          Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
-                      }
-
-                      LazyColumn(Modifier.fillMaxSize()) {
-                          items(vm.results) { item -> VideoRow(item) { vm.play(item) } }
-                      }
+              BackHandler(enabled = vm.fullscreen || vm.watching || vm.searching) {
+                  when {
+                      vm.fullscreen -> vm.fullscreen = false
+                      vm.watching -> vm.closeWatch()
+                      else -> vm.searching = false
                   }
+              }
+              FullscreenEffect(vm)
+
+              Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                  if (vm.watching) WatchScreen(vm) else HomeScreen(vm)
               }
           }
 
+          /** Bật/tắt chế độ toàn màn hình: xoay ngang và ẩn thanh hệ thống. */
           @Composable
-          fun VideoRow(item: StreamInfoItem, onClick: () -> Unit) {
-              Row(
-                  Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically
-              ) {
-                  AsyncImage(
-                      model = item.thumbnails.firstOrNull()?.url,
-                      contentDescription = null,
-                      contentScale = ContentScale.Crop,
-                      modifier = Modifier.width(140.dp).aspectRatio(16 / 9f).clip(MaterialTheme.shapes.small)
-                  )
-                  Spacer(Modifier.width(12.dp))
-                  Column {
-                      Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                          style = MaterialTheme.typography.bodyLarge)
-                      Text(item.uploaderName ?: "", style = MaterialTheme.typography.bodySmall,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant)
+          private fun FullscreenEffect(vm: MainViewModel) {
+              val ctx = LocalContext.current
+              LaunchedEffect(vm.fullscreen) {
+                  val act = ctx.findActivity() ?: return@LaunchedEffect
+                  val controller = WindowCompat.getInsetsController(act.window, act.window.decorView)
+                  if (vm.fullscreen) {
+                      act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                      controller.systemBarsBehavior =
+                          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                      controller.hide(WindowInsetsCompat.Type.systemBars())
+                  } else {
+                      act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                      controller.show(WindowInsetsCompat.Type.systemBars())
                   }
               }
-          }
-
-          @Composable
-          fun VideoPlayer(url: String) {
-              val context = LocalContext.current
-              val player = remember(url) {
-                  val dataSource = DefaultHttpDataSource.Factory()
-                      .setUserAgent(DownloaderImpl.USER_AGENT)
-                      .setAllowCrossProtocolRedirects(true)
-                  ExoPlayer.Builder(context)
-                      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
-                      .build()
-                      .apply {
-                          setMediaItem(MediaItem.fromUri(url))
-                          prepare()
-                          playWhenReady = true
-                      }
-              }
-              DisposableEffect(player) { onDispose { player.release() } }
-
-              AndroidView(
-                  factory = { PlayerView(it).apply { this.player = player } },
-                  modifier = Modifier.fillMaxWidth().aspectRatio(16 / 9f)
-              )
           }
           EOF
           mkdir -p app/src/main/java/com/example/adfreetube
           cat > app/src/main/java/com/example/adfreetube/MainViewModel.kt <<'EOF'
           package com.example.adfreetube
 
+          import androidx.compose.foundation.lazy.LazyListState
           import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableIntStateOf
           import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.setValue
+          import androidx.core.text.HtmlCompat
           import androidx.lifecycle.ViewModel
           import androidx.lifecycle.viewModelScope
+          import kotlinx.coroutines.CancellationException
           import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.delay
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
+          import org.schabi.newpipe.extractor.NewPipe
+          import org.schabi.newpipe.extractor.Page
           import org.schabi.newpipe.extractor.ServiceList
+          import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
+          import org.schabi.newpipe.extractor.localization.ContentCountry
+          import org.schabi.newpipe.extractor.localization.Localization
           import org.schabi.newpipe.extractor.search.SearchInfo
+          import org.schabi.newpipe.extractor.stream.Description
           import org.schabi.newpipe.extractor.stream.StreamInfo
           import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
+          data class Quality(val label: String, val url: String)
+
+          data class WatchState(
+              val pageUrl: String,
+              val title: String,
+              val uploader: String,
+              val avatar: String?,
+              val subscribers: Long,
+              val views: Long,
+              val likes: Long,
+              val date: String,
+              val description: String,
+              val qualities: List<Quality>,
+              val related: List<StreamInfoItem>
+          )
+
           class MainViewModel : ViewModel() {
-              var query by mutableStateOf("")
-              var results by mutableStateOf<List<StreamInfoItem>>(emptyList())
-              var loading by mutableStateOf(false)
-              var error by mutableStateOf<String?>(null)
-
-              var playingUrl by mutableStateOf<String?>(null)
-              var playingTitle by mutableStateOf("")
-
               private val youtube = ServiceList.YouTube
 
-              fun search() {
-                  if (query.isBlank()) return
-                  viewModelScope.launch {
-                      loading = true
-                      error = null
+              // ---- Trang chủ / tìm kiếm ----
+              val chips = listOf(
+                  "Tất cả" to "xu hướng",
+                  "Trò chơi" to "trò chơi",
+                  "Âm nhạc" to "nhạc việt",
+                  "Trực tiếp" to "trực tiếp",
+                  "Tin tức" to "tin tức hôm nay",
+                  "Thể thao" to "thể thao",
+                  "Nấu ăn" to "nấu ăn",
+                  "Hoạt hình" to "hoạt hình",
+                  "Công nghệ" to "công nghệ"
+              )
+              val feedListState = LazyListState()
+
+              var searching by mutableStateOf(false)
+              var searchText by mutableStateOf("")
+              var suggestions by mutableStateOf<List<String>>(emptyList())
+              var selectedChip by mutableIntStateOf(0)
+              var currentQuery by mutableStateOf(chips[0].second)
+
+              var feed by mutableStateOf<List<StreamInfoItem>>(emptyList())
+              var feedLoading by mutableStateOf(false)
+              var moreLoading by mutableStateOf(false)
+              var feedError by mutableStateOf<String?>(null)
+
+              private var handler: SearchQueryHandler? = null
+              private var nextPage: Page? = null
+              private var feedJob: Job? = null
+              private var suggestJob: Job? = null
+
+              // ---- Màn hình xem video ----
+              var watching by mutableStateOf(false)
+              var watch by mutableStateOf<WatchState?>(null)
+              var watchLoading by mutableStateOf(false)
+              var watchError by mutableStateOf<String?>(null)
+              var watchTitleHint by mutableStateOf("")
+              var selectedQuality by mutableIntStateOf(0)
+              var playerError by mutableStateOf<String?>(null)
+              var fullscreen by mutableStateOf(false)
+              private var watchJob: Job? = null
+
+              init {
+                  NewPipe.init(DownloaderImpl, Localization("vi", "VN"), ContentCountry("VN"))
+                  loadFeed(currentQuery)
+              }
+
+              // ================= Feed =================
+              fun loadFeed(q: String) {
+                  feedJob?.cancel()
+                  feedJob = viewModelScope.launch {
+                      feedLoading = true
+                      moreLoading = false
+                      feedError = null
+                      feed = emptyList()
+                      nextPage = null
                       try {
-                          results = withContext(Dispatchers.IO) {
-                              val handler = youtube.searchQHFactory
-                                  .fromQuery(query, listOf("videos"), "")
-                              SearchInfo.getInfo(youtube, handler)
-                                  .relatedItems
-                                  .filterIsInstance<StreamInfoItem>()
-                          }
+                          val h = youtube.searchQHFactory.fromQuery(q, listOf("videos"), "")
+                          val info = withContext(Dispatchers.IO) { SearchInfo.getInfo(youtube, h) }
+                          handler = h
+                          nextPage = info.nextPage
+                          feed = info.relatedItems.filterIsInstance<StreamInfoItem>()
+                      } catch (e: CancellationException) {
+                          throw e
                       } catch (e: Exception) {
-                          error = e.message ?: "Lỗi không xác định"
+                          feedError = e.message ?: "Không tải được danh sách video"
                       }
-                      loading = false
+                      feedLoading = false
                   }
               }
 
-              fun play(item: StreamInfoItem) {
+              fun loadMore() {
+                  val page = nextPage ?: return
+                  val h = handler ?: return
+                  if (moreLoading || feedLoading) return
                   viewModelScope.launch {
-                      loading = true
-                      error = null
+                      moreLoading = true
                       try {
-                          val url = withContext(Dispatchers.IO) {
-                              val info = StreamInfo.getInfo(youtube, item.url)
-                              // videoStreams = luồng đã gộp sẵn hình + tiếng (tối đa ~720p)
-                              info.videoStreams.maxByOrNull { it.height }?.content
-                                  ?: info.hlsUrl // video trực tiếp (live)
-                                  ?: throw IllegalStateException("Không tìm thấy luồng phát")
-                          }
-                          playingTitle = item.name
-                          playingUrl = url
+                          val res = withContext(Dispatchers.IO) { SearchInfo.getMoreItems(youtube, h, page) }
+                          feed = feed + res.items.filterIsInstance<StreamInfoItem>()
+                          nextPage = res.nextPage
+                      } catch (e: CancellationException) {
+                          throw e
                       } catch (e: Exception) {
-                          error = e.message ?: "Không phát được video"
+                          nextPage = null
                       }
-                      loading = false
+                      moreLoading = false
                   }
               }
 
-              fun closePlayer() { playingUrl = null }
+              fun selectChip(i: Int) {
+                  selectedChip = i
+                  currentQuery = chips[i].second
+                  loadFeed(currentQuery)
+              }
+
+              fun openSearch() {
+                  searching = true
+              }
+
+              fun onSearchTextChange(t: String) {
+                  searchText = t
+                  suggestJob?.cancel()
+                  if (t.isBlank()) {
+                      suggestions = emptyList()
+                      return
+                  }
+                  suggestJob = viewModelScope.launch {
+                      delay(250)
+                      try {
+                          suggestions = withContext(Dispatchers.IO) { youtube.suggestionExtractor.suggestionList(t) }
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          // gợi ý lỗi thì bỏ qua
+                      }
+                  }
+              }
+
+              fun submitSearch(q: String) {
+                  if (q.isBlank()) return
+                  searchText = q
+                  searching = false
+                  suggestions = emptyList()
+                  selectedChip = -1
+                  currentQuery = q
+                  loadFeed(q)
+              }
+
+              // ================= Xem video =================
+              fun play(url: String, titleHint: String = "") {
+                  watchJob?.cancel()
+                  watching = true
+                  watchLoading = true
+                  watchError = null
+                  playerError = null
+                  watchTitleHint = titleHint
+                  watch = null
+                  selectedQuality = 0
+                  watchJob = viewModelScope.launch {
+                      try {
+                          watch = withContext(Dispatchers.IO) { loadWatch(url) }
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          watchError = e.message ?: "Không tải được video"
+                      }
+                      watchLoading = false
+                  }
+              }
+
+              fun closeWatch() {
+                  watchJob?.cancel()
+                  watching = false
+                  fullscreen = false
+                  watch = null
+                  watchError = null
+                  playerError = null
+              }
+
+              private fun loadWatch(url: String): WatchState {
+                  val info = StreamInfo.getInfo(youtube, url)
+
+                  // videoStreams = luồng đã gộp sẵn hình + tiếng
+                  var qualities = info.videoStreams
+                      .sortedByDescending { it.height }
+                      .distinctBy { it.height }
+                      .map { Quality(if (it.resolution.isNullOrBlank()) "${it.height}p" else it.resolution, it.content) }
+                  if (qualities.isEmpty() && !info.hlsUrl.isNullOrBlank()) {
+                      qualities = listOf(Quality("Tự động", info.hlsUrl))
+                  }
+                  if (qualities.isEmpty()) {
+                      throw IllegalStateException("Không tìm thấy luồng phát cho video này")
+                  }
+
+                  val d = info.description
+                  val desc = when {
+                      d == null -> ""
+                      d.type == Description.HTML ->
+                          HtmlCompat.fromHtml(d.content, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().trim()
+                      else -> d.content.trim()
+                  }
+
+                  return WatchState(
+                      pageUrl = url,
+                      title = info.name,
+                      uploader = info.uploaderName ?: "",
+                      avatar = info.uploaderAvatars.lastOrNull()?.url,
+                      subscribers = info.uploaderSubscriberCount,
+                      views = info.viewCount,
+                      likes = info.likeCount,
+                      date = info.textualUploadDate ?: "",
+                      description = desc,
+                      qualities = qualities,
+                      related = info.relatedItems.filterIsInstance<StreamInfoItem>()
+                  )
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/Theme.kt <<'EOF'
+          package com.example.adfreetube
+
+          import androidx.compose.foundation.isSystemInDarkTheme
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.material3.lightColorScheme
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.SideEffect
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.toArgb
+          import androidx.compose.ui.platform.LocalView
+          import androidx.core.view.WindowCompat
+
+          private val DarkColors = darkColorScheme(
+              primary = Color(0xFF3EA6FF),
+              background = Color(0xFF0F0F0F),
+              surface = Color(0xFF0F0F0F),
+              onBackground = Color.White,
+              onSurface = Color.White,
+              surfaceVariant = Color(0xFF272727),
+              onSurfaceVariant = Color(0xFFAAAAAA),
+              error = Color(0xFFFF6B6B)
+          )
+
+          private val LightColors = lightColorScheme(
+              primary = Color(0xFF065FD4),
+              background = Color.White,
+              surface = Color.White,
+              onBackground = Color(0xFF0F0F0F),
+              onSurface = Color(0xFF0F0F0F),
+              surfaceVariant = Color(0xFFF2F2F2),
+              onSurfaceVariant = Color(0xFF606060)
+          )
+
+          @Composable
+          fun AdFreeTheme(content: @Composable () -> Unit) {
+              val dark = isSystemInDarkTheme()
+              val colors = if (dark) DarkColors else LightColors
+              val view = LocalView.current
+              if (!view.isInEditMode) {
+                  SideEffect {
+                      val window = view.context.findActivity()?.window ?: return@SideEffect
+                      window.statusBarColor = colors.background.toArgb()
+                      window.navigationBarColor = colors.background.toArgb()
+                      val controller = WindowCompat.getInsetsController(window, view)
+                      controller.isAppearanceLightStatusBars = !dark
+                      controller.isAppearanceLightNavigationBars = !dark
+                  }
+              }
+              MaterialTheme(colorScheme = colors, content = content)
+          }
+          EOF
+          mkdir -p app/src/main/java/com/example/adfreetube
+          cat > app/src/main/java/com/example/adfreetube/WatchScreen.kt <<'EOF'
+          package com.example.adfreetube
+
+          import android.content.Intent
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.horizontalScroll
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.aspectRatio
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Settings
+          import androidx.compose.material.icons.filled.Share
+          import androidx.compose.material.icons.filled.ThumbUp
+          import androidx.compose.material3.CircularProgressIndicator
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalLifecycleOwner
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.viewinterop.AndroidView
+          import androidx.lifecycle.Lifecycle
+          import androidx.lifecycle.LifecycleEventObserver
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.PlaybackException
+          import androidx.media3.common.Player
+          import androidx.media3.datasource.DefaultHttpDataSource
+          import androidx.media3.exoplayer.ExoPlayer
+          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+          import androidx.media3.ui.PlayerView
+
+          @Composable
+          fun WatchScreen(vm: MainViewModel) {
+              val ctx = LocalContext.current
+              val w = vm.watch
+              val quality = w?.qualities?.getOrNull(vm.selectedQuality)
+
+              val exo = remember {
+                  ExoPlayer.Builder(ctx).build().apply {
+                      playWhenReady = true
+                      addListener(object : Player.Listener {
+                          override fun onPlayerError(error: PlaybackException) {
+                              vm.playerError =
+                                  "Lỗi phát (${error.errorCodeName}): ${error.cause?.message ?: error.message}"
+                          }
+
+                          override fun onPlaybackStateChanged(playbackState: Int) {
+                              if (playbackState == Player.STATE_READY) vm.playerError = null
+                          }
+                      })
+                  }
+              }
+              DisposableEffect(Unit) { onDispose { exo.release() } }
+
+              // Tạm dừng khi thoát app ra màn hình chính
+              val lifecycleOwner = LocalLifecycleOwner.current
+              DisposableEffect(lifecycleOwner) {
+                  val observer = LifecycleEventObserver { _, event ->
+                      if (event == Lifecycle.Event.ON_STOP) exo.pause()
+                  }
+                  lifecycleOwner.lifecycle.addObserver(observer)
+                  onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+              }
+
+              // Nạp video mới / đổi chất lượng (giữ nguyên vị trí đang xem khi chỉ đổi chất lượng)
+              var lastPage by remember { mutableStateOf<String?>(null) }
+              LaunchedEffect(w?.pageUrl, quality?.url) {
+                  if (w == null || quality == null) return@LaunchedEffect
+                  val pos = if (lastPage == w.pageUrl) exo.currentPosition else 0L
+                  lastPage = w.pageUrl
+                  vm.playerError = null
+                  val dataSource = DefaultHttpDataSource.Factory()
+                      .setUserAgent(userAgentFor(quality.url))
+                      .setAllowCrossProtocolRedirects(true)
+                  val source = DefaultMediaSourceFactory(dataSource)
+                      .createMediaSource(MediaItem.fromUri(quality.url))
+                  exo.setMediaSource(source, pos)
+                  exo.prepare()
+                  exo.playWhenReady = true
+              }
+
+              Column(Modifier.fillMaxSize()) {
+                  Box(
+                      (if (vm.fullscreen) Modifier.fillMaxSize()
+                      else Modifier
+                          .fillMaxWidth()
+                          .aspectRatio(16 / 9f))
+                          .background(Color.Black)
+                  ) {
+                      AndroidView(
+                          factory = { c ->
+                              PlayerView(c).apply {
+                                  player = exo
+                                  setShowNextButton(false)
+                                  setShowPreviousButton(false)
+                                  setFullscreenButtonClickListener { isFull -> vm.fullscreen = isFull }
+                              }
+                          },
+                          modifier = Modifier.fillMaxSize()
+                      )
+                      if (w == null && vm.watchLoading) {
+                          CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White)
+                      }
+                  }
+
+                  if (!vm.fullscreen) {
+                      if (w == null) {
+                          Column(Modifier.padding(12.dp)) {
+                              if (vm.watchTitleHint.isNotEmpty()) {
+                                  Text(vm.watchTitleHint, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                              }
+                              vm.watchError?.let {
+                                  Spacer(Modifier.height(12.dp))
+                                  Text(it, color = MaterialTheme.colorScheme.error)
+                              }
+                          }
+                      } else {
+                          WatchDetails(vm, w)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun WatchDetails(vm: MainViewModel, w: WatchState) {
+              val ctx = LocalContext.current
+              val dim = MaterialTheme.colorScheme.onSurfaceVariant
+
+              LazyColumn(Modifier.fillMaxSize()) {
+                  vm.playerError?.let { msg ->
+                      item {
+                          Text(
+                              msg,
+                              color = MaterialTheme.colorScheme.error,
+                              fontSize = 13.sp,
+                              modifier = Modifier.padding(12.dp)
+                          )
+                      }
+                  }
+
+                  // Tiêu đề
+                  item {
+                      Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp)) {
+                          Text(
+                              w.title,
+                              fontSize = 18.sp,
+                              lineHeight = 24.sp,
+                              fontWeight = FontWeight.SemiBold
+                          )
+                      }
+                  }
+
+                  // Kênh
+                  item {
+                      Row(
+                          Modifier
+                              .fillMaxWidth()
+                              .padding(12.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Avatar(w.avatar, 40.dp)
+                          Spacer(Modifier.width(12.dp))
+                          Column {
+                              Text(
+                                  w.uploader,
+                                  fontWeight = FontWeight.SemiBold,
+                                  fontSize = 15.sp,
+                                  maxLines = 1,
+                                  overflow = TextOverflow.Ellipsis
+                              )
+                              if (w.subscribers >= 0) {
+                                  Text(
+                                      formatCount(w.subscribers) + " người đăng ký",
+                                      fontSize = 12.sp,
+                                      color = dim
+                                  )
+                              }
+                          }
+                      }
+                  }
+
+                  // Hàng nút: lượt thích, chia sẻ, chất lượng
+                  item {
+                      var menu by remember { mutableStateOf(false) }
+                      Row(
+                          Modifier
+                              .horizontalScroll(rememberScrollState())
+                              .padding(horizontal = 12.dp),
+                          horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      ) {
+                          if (w.likes >= 0) Pill(formatCount(w.likes), Icons.Filled.ThumbUp)
+                          Pill("Chia sẻ", Icons.Filled.Share) {
+                              val send = Intent(Intent.ACTION_SEND).apply {
+                                  type = "text/plain"
+                                  putExtra(Intent.EXTRA_TEXT, w.pageUrl)
+                              }
+                              ctx.startActivity(Intent.createChooser(send, "Chia sẻ video"))
+                          }
+                          Box {
+                              Pill(
+                                  w.qualities.getOrNull(vm.selectedQuality)?.label ?: "Chất lượng",
+                                  Icons.Filled.Settings
+                              ) { menu = true }
+                              DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                  w.qualities.forEachIndexed { i, q ->
+                                      DropdownMenuItem(
+                                          text = { Text(q.label) },
+                                          onClick = {
+                                              vm.selectedQuality = i
+                                              menu = false
+                                          }
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  // Mô tả
+                  item {
+                      var expanded by remember(w.pageUrl) { mutableStateOf(false) }
+                      val meta = listOfNotNull(
+                          w.views.takeIf { it >= 0 }?.let { formatCount(it) + " lượt xem" },
+                          w.date.takeIf { it.isNotBlank() }
+                      ).joinToString("  ")
+                      Column(
+                          Modifier
+                              .padding(12.dp)
+                              .fillMaxWidth()
+                              .clip(RoundedCornerShape(12.dp))
+                              .background(MaterialTheme.colorScheme.surfaceVariant)
+                              .clickable { expanded = !expanded }
+                              .padding(12.dp)
+                      ) {
+                          if (meta.isNotEmpty()) {
+                              Text(meta, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                              Spacer(Modifier.height(4.dp))
+                          }
+                          if (w.description.isNotBlank()) {
+                              Text(
+                                  w.description,
+                                  fontSize = 13.sp,
+                                  maxLines = if (expanded) Int.MAX_VALUE else 3,
+                                  overflow = TextOverflow.Ellipsis
+                              )
+                          }
+                      }
+                  }
+
+                  // Video đề xuất
+                  items(w.related) { item ->
+                      VideoCard(item) { vm.play(item.url, item.name) }
+                  }
+              }
           }
           EOF
           cat > build.gradle.kts <<'EOF'
